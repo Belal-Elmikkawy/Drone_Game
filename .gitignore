@@ -1,0 +1,13 @@
+server
+input
+drone
+obstacle
+target
+*.o
+*.log
+server
+input
+drone
+obstacle
+target
+*.o
