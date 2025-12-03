@@ -1,4 +1,4 @@
-# Drone Simulator (Assignment 1 Enhanced)
+# Drone Simulator 
 
 This project implements a multi-process drone simulation system using a **Blackboard Architecture**. It features a physics-based drone, interactive keyboard controls, dynamic obstacles and targets, and real-time monitoring via external terminal windows.
 
