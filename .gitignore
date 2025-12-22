@@ -11,5 +11,5 @@ drone
 obstacle
 target
 *.o
-src/
+# src/
 
