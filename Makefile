@@ -1,32 +1,46 @@
 CC = gcc
-CFLAGS = -Wall
-# ADD -lm HERE:
+CFLAGS = -Wall -I./include -D_GNU_SOURCE
+
+# Libraries
 LIBS_SERVER = -lncurses -lm
 LIBS_DRONE = -lm
-DEPS = common.h
+LIBS_WATCHDOG = -lncurses
 
-all: server input drone obstacle target
+# Executable Paths (Inside src folders)
+EXEC_SERVER = src/server/server
+EXEC_INPUT = src/input/input
+EXEC_DRONE = src/drone/drone
+EXEC_OBSTACLE = src/obstacle/obstacle
+EXEC_TARGET = src/target/target
+EXEC_WATCHDOG = src/watchdog/watchdog
 
-%.o: %.c $(DEPS)
-	$(CC) $(CFLAGS) -c -o $@ $<
+TARGETS = $(EXEC_SERVER) $(EXEC_INPUT) $(EXEC_DRONE) $(EXEC_OBSTACLE) $(EXEC_TARGET) $(EXEC_WATCHDOG)
 
-server: pro_B.c $(DEPS)
-	$(CC) $(CFLAGS) pro_B.c -o server $(LIBS_SERVER)
+all: $(TARGETS)
 
-input: pro_I.c $(DEPS)
-	$(CC) $(CFLAGS) pro_I.c -o input
+# --- Compilation Rules ---
 
-drone: pro_D.c $(DEPS)
-	$(CC) $(CFLAGS) pro_D.c -o drone $(LIBS_DRONE)
+$(EXEC_SERVER): src/server/pro_B.c
+	$(CC) $(CFLAGS) src/server/pro_B.c -o $(EXEC_SERVER) $(LIBS_SERVER)
 
-obstacle: pro_O.c $(DEPS)
-	$(CC) $(CFLAGS) pro_O.c -o obstacle
+$(EXEC_INPUT): src/input/pro_I.c
+	$(CC) $(CFLAGS) src/input/pro_I.c -o $(EXEC_INPUT)
 
-target: pro_T.c $(DEPS)
-	$(CC) $(CFLAGS) pro_T.c -o target
+$(EXEC_DRONE): src/drone/pro_D.c
+	$(CC) $(CFLAGS) src/drone/pro_D.c -o $(EXEC_DRONE) $(LIBS_DRONE)
 
+$(EXEC_OBSTACLE): src/obstacle/pro_O.c
+	$(CC) $(CFLAGS) src/obstacle/pro_O.c -o $(EXEC_OBSTACLE)
+
+$(EXEC_TARGET): src/target/pro_T.c
+	$(CC) $(CFLAGS) src/target/pro_T.c -o $(EXEC_TARGET)
+
+$(EXEC_WATCHDOG): src/watchdog/pro_W.c
+	$(CC) $(CFLAGS) src/watchdog/pro_W.c -o $(EXEC_WATCHDOG) $(LIBS_WATCHDOG)
+
+# --- Run ---
 run: all
-	./server
+	./$(EXEC_SERVER)
 
 clean:
-	rm -f server input drone obstacle target *.o
+	rm -f $(TARGETS) *.o *.log pid_registry.txt
