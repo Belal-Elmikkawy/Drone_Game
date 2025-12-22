@@ -1,19 +1,19 @@
-// pro_D.c
+// pro_D.c - Drone Physics
 #include "common.h"
 
-float M = DEFAULT_M, K = DEFAULT_K, T = DEFAULT_T;
+float T = DEFAULT_T; 
 float ETA = DEFAULT_ETA, RHO = DEFAULT_RHO;
 
 Point obstacles[MAX_OBSTACLES];
-Point targets[MAX_TARGETS];
 int current_w = DEFAULT_WIDTH;
 int current_h = DEFAULT_HEIGHT;
+int motion_started = 0; 
 
-void log_physics(float x, float y, float fx, float fy, float rx, float ry, float ax, float ay) {
+void log_physics(float x, float y, float fx, float fy, float rx, float ry) {
     FILE *f = fopen(LOG_DRONE, "a");
     if(f) {
-        fprintf(f, "POS:(%.1f,%.1f) | CMD:(%.1f,%.1f) | REPUL:(%.1f,%.1f) | ATTR:(%.1f,%.1f)\n", 
-                x, y, fx, fy, rx, ry, ax, ay);
+        fprintf(f, "POS:(%.1f,%.1f) | CMD:(%.1f,%.1f) | REPUL:(%.1f,%.1f)\n", 
+                x, y, fx, fy, rx, ry);
         fclose(f);
     }
 }
@@ -23,8 +23,6 @@ void load_params() {
     if (f) {
         char line[64];
         while (fgets(line, sizeof(line), f)) {
-            if (strncmp(line, "M=", 2) == 0) M = atof(line+2);
-            if (strncmp(line, "K=", 2) == 0) K = atof(line+2);
             if (strncmp(line, "T=", 2) == 0) T = atof(line+2);
             if (strncmp(line, "ETA=", 4) == 0) ETA = atof(line+4);
             if (strncmp(line, "RHO=", 4) == 0) RHO = atof(line+4);
@@ -50,24 +48,12 @@ void parse_world_state(char *buf, float *fx, float *fy) {
             i++; o_ptr += off; if(*o_ptr == ';') o_ptr++; else break;
         }
     }
-
-    memset(targets, 0, sizeof(targets));
-    char *t_ptr = strstr(buf, "T:");
-    if(t_ptr) {
-        t_ptr += 2;
-        int i=0, tx, ty, off;
-        while(sscanf(t_ptr, "%d,%d%n", &tx, &ty, &off) == 2 && i < MAX_TARGETS) {
-            targets[i].x = tx; targets[i].y = ty;
-            i++; t_ptr += off; if(*t_ptr == ';') t_ptr++; else break;
-        }
-    }
 }
 
-void calc_forces(float x, float y, float *rx, float *ry, float *ax, float *ay) {
-    *rx = 0; *ry = 0; *ax = 0; *ay = 0;
+void calc_repulsion(float x, float y, float *rx, float *ry) {
+    *rx = 0; *ry = 0;
     float dist;
 
-    // Wall Repulsion
     dist = (x < 0.1f) ? 0.1f : x;
     if (dist < RHO) *rx += ETA * pow((1.0/dist - 1.0/RHO), 2);
     dist = current_w - x; if (dist <= 0.1f) dist = 0.1f;
@@ -78,7 +64,6 @@ void calc_forces(float x, float y, float *rx, float *ry, float *ax, float *ay) {
     dist = current_h - y; if (dist <= 0.1f) dist = 0.1f;
     if (dist < RHO) *ry -= ETA * pow((1.0/dist - 1.0f/RHO), 2);
 
-    // Obstacle Repulsion
     for(int i=0; i<MAX_OBSTACLES; i++) {
         if(obstacles[i].x == 0) continue;
         float dx = x - obstacles[i].x;
@@ -90,42 +75,17 @@ void calc_forces(float x, float y, float *rx, float *ry, float *ax, float *ay) {
             *rx += mag * (dx/dist); *ry += mag * (dy/dist);
         }
     }
-
-    // UPDATED: Target Attraction (Constant pull to NEAREST target)
-    int nearest_idx = -1;
-    float min_dist = 100000.0f;
-
-    for(int i=0; i<MAX_TARGETS; i++) {
-        if(targets[i].x == 0) continue;
-        float dx = targets[i].x - x;
-        float dy = targets[i].y - y;
-        float d = sqrt(dx*dx + dy*dy);
-        
-        if (d < min_dist) {
-            min_dist = d;
-            nearest_idx = i;
-        }
-    }
-
-    if (nearest_idx != -1) {
-        float dx = targets[nearest_idx].x - x;
-        float dy = targets[nearest_idx].y - y;
-        float d = min_dist < 0.1f ? 0.1f : min_dist;
-        
-        // Constant force strength (tune this if too fast/slow)
-        float strength = 2.0f; 
-        
-        // Normalized vector * strength
-        *ax += (dx / d) * strength;
-        *ay += (dy / d) * strength;
-    }
 }
 
 int main(void) {
     load_params();
-    float x_prev2 = DEFAULT_WIDTH/2.0f, y_prev2 = DEFAULT_HEIGHT/2.0f;
-    float x_prev = DEFAULT_WIDTH/2.0f, y_prev = DEFAULT_HEIGHT/2.0f;
+    float x_curr = DEFAULT_WIDTH/2.0f; 
+    float y_curr = DEFAULT_HEIGHT/2.0f;
     float F_cmd_x = 0, F_cmd_y = 0;
+
+    // --- SPEED CONTROL ---
+    // Kept at 0.1f for slow, controlled movement.
+    float SPEED_SCALAR = 0.1f; 
 
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
     char buf[BUF_SIZE];
@@ -140,31 +100,45 @@ int main(void) {
             if (start) parse_world_state(start, &F_cmd_x, &F_cmd_y);
         }
 
-        float F_rep_x, F_rep_y, F_att_x, F_att_y;
-        calc_forces(x_prev, y_prev, &F_rep_x, &F_rep_y, &F_att_x, &F_att_y);
+        if (!motion_started) {
+            if (fabs(F_cmd_x) > 0.1f || fabs(F_cmd_y) > 0.1f) motion_started = 1;
+        }
 
-        float F_tot_x = F_cmd_x + F_rep_x + F_att_x;
-        float F_tot_y = F_cmd_y + F_rep_y + F_att_y;
-
-        float term1 = M + K*T;
-        float term2 = 2*M + K*T;
-        float x_next = ( (T*T*F_tot_x) + (term2*x_prev) - (M*x_prev2) ) / term1;
-        float y_next = ( (T*T*F_tot_y) + (term2*y_prev) - (M*y_prev2) ) / term1;
-
-        x_prev2 = x_prev; y_prev2 = y_prev;
-        x_prev = x_next; y_prev = y_next;
+        float F_rep_x = 0, F_rep_y = 0;
         
-        if (x_prev < 1.0f) { x_prev = 1.0f; x_prev2 = 1.0f; }
-        if (x_prev > current_w-1.0f) { x_prev = current_w-1.0f; x_prev2 = current_w-1.0f; }
-        if (y_prev < 1.0f) { y_prev = 1.0f; y_prev2 = 1.0f; }
-        if (y_prev > current_h-1.0f) { y_prev = current_h-1.0f; y_prev2 = current_h-1.0f; }
+        if (motion_started) {
+            calc_repulsion(x_curr, y_curr, &F_rep_x, &F_rep_y);
 
-        printf("%.2f,%.2f\n", x_prev, y_prev);
+            float dir_x = 0;
+            if (F_cmd_x > 0.1f) dir_x = 1.0f;
+            else if (F_cmd_x < -0.1f) dir_x = -1.0f;
+
+            float dir_y = 0;
+            if (F_cmd_y > 0.1f) dir_y = 1.0f;
+            else if (F_cmd_y < -0.1f) dir_y = -1.0f;
+
+            // --- DIAGONAL CORRECTION ---
+            if (dir_x != 0 && dir_y != 0) {
+                dir_x *= 0.7071f; 
+                dir_y *= 0.7071f;
+            }
+
+            float move_x = (dir_x + F_rep_x * 0.1f) * SPEED_SCALAR;
+            float move_y = (dir_y + F_rep_y * 0.1f) * SPEED_SCALAR;
+
+            x_curr += move_x;
+            y_curr += move_y;
+
+            if (x_curr < 1.0f) x_curr = 1.0f;
+            if (x_curr > current_w-1.0f) x_curr = current_w-1.0f;
+            if (y_curr < 1.0f) y_curr = 1.0f;
+            if (y_curr > current_h-1.0f) y_curr = current_h-1.0f;
+        }
+
+        printf("%.2f,%.2f\n", x_curr, y_curr);
         fflush(stdout);
         
-        // Log to file for the Dashboard
-        log_physics(x_prev, y_prev, F_cmd_x, F_cmd_y, F_rep_x, F_rep_y, F_att_x, F_att_y);
-        
+        log_physics(x_curr, y_curr, F_cmd_x, F_cmd_y, F_rep_x, F_rep_y);
         nanosleep(&ts, NULL);
     }
     return 0;

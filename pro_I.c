@@ -1,13 +1,10 @@
+// pro_I.c - Input (Interference Fixed)
 #include "common.h"
 #include <termios.h>
 
 void log_key(char key, float fx, float fy) {
     FILE *f = fopen(LOG_INPUT, "a");
-    if(f) {
-        // Human readable log for the Dashboard
-        fprintf(f, "> Key: [%c] | Force Vector: (%.1f, %.1f)\n", key, fx, fy);
-        fclose(f);
-    }
+    if(f) { fprintf(f, "> Key: [%c] | Force Vector: (%.1f, %.1f)\n", key, fx, fy); fclose(f); }
 }
 
 void set_raw_mode(int enable) {
@@ -26,7 +23,6 @@ void set_raw_mode(int enable) {
 int main() {
     set_raw_mode(1);
     float Fx = 0.0f, Fy = 0.0f;
-    const float STEP = 1.0f;
     char c;
     
     tcflush(STDIN_FILENO, TCIFLUSH);
@@ -34,21 +30,21 @@ int main() {
 
     while (read(STDIN_FILENO, &c, 1) > 0) {
         switch(c) {
-            case 'e': case 'i': Fy -= STEP; break; 
-            case 'c': case ',': Fy += STEP; break; 
-            case 's': case 'j': Fx -= STEP; break; 
-            case 'f': case 'l': Fx += STEP; break; 
-            case 'w': Fx -= STEP; Fy -= STEP; break;
-            case 'r': Fx += STEP; Fy -= STEP; break;
-            case 'x': Fx -= STEP; Fy += STEP; break;
-            case 'v': Fx += STEP; Fy += STEP; break;
-            case 'd': case 'k': case ' ': Fx = 0.0f; Fy = 0.0f; break;
+            case 'e': case 'i': Fx=0.0f; Fy=-1.0f; break; // UP
+            case 'c': case ',': Fx=0.0f; Fy=1.0f;  break; // DOWN
+            case 's': case 'j': Fx=-1.0f; Fy=0.0f; break; // LEFT
+            case 'f': case 'l': Fx=1.0f;  Fy=0.0f; break; // RIGHT
+
+            case 'w': Fx=-1.0f; Fy=-1.0f; break; 
+            case 'r': Fx=1.0f;  Fy=-1.0f; break; 
+            case 'x': Fx=-1.0f; Fy=1.0f;  break; 
+            case 'v': Fx=1.0f;  Fy=1.0f;  break; 
+
+            case 'd': case 'k': case ' ': Fx=0.0f; Fy=0.0f; break;
             case 'q': exit(0);
         }
         printf("%.2f,%.2f\n", Fx, Fy);
         fflush(stdout);
-        
-        // Log to file for the Dashboard
         log_key(c, Fx, Fy);
     }
     set_raw_mode(0);
