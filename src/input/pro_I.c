@@ -1,6 +1,9 @@
 #include "common.h"
 #include <termios.h>
 
+// FUNCTION: set_raw_mode
+// LOGIC: Disables 'canonical mode' (buffering) and 'echo'.
+// REASON: Allows the game to read keypresses instantly without the user pressing ENTER.
 void set_raw_mode(int enable) {
     static struct termios oldt, newt;
     if (enable) {
@@ -20,7 +23,6 @@ int main() {
 
     set_raw_mode(1);
     
-    // Force Accumulators
     float Fx = 0.0f; 
     float Fy = 0.0f;
     char c;
@@ -33,45 +35,48 @@ int main() {
         if (read(STDIN_FILENO, &c, 1) > 0) {
             set_status("Processing Key");
             switch(c) {
-                // --- CARDINAL DIRECTIONS (Pure Vertical/Horizontal) ---
-                // FIX: Reset the opposing force to 0 to prevent diagonal drift
+                // --- ASSIGNMENT 1 FIX: BUTTON INTERFERENCE ---
+                // Problem: If user pressed UP then LEFT, forces would accumulate (Fx=-1, Fy=-1)
+                //          causing diagonal drift when not intended.
+                // Fix: When a vertical key is pressed, we explicitly reset Fx to 0.0.
+                //      When a horizontal key is pressed, we explicitly reset Fy to 0.0.
                 
-                // UP (Reset X)
+                // UP (Reset Horizontal Force)
                 case 'e': case 'i': 
                     Fy -= 1.0f; 
-                    Fx = 0.0f; // Force horizontal stop
+                    Fx = 0.0f; 
                     break; 
 
-                // DOWN (Reset X)
+                // DOWN (Reset Horizontal Force)
                 case 'c': case ',': 
                     Fy += 1.0f; 
-                    Fx = 0.0f; // Force horizontal stop
+                    Fx = 0.0f; 
                     break; 
 
-                // DOWN (User requested 'X' as purely down)
                 case 'x': 
                     Fy += 1.0f; 
                     Fx = 0.0f; 
                     break;
 
-                // LEFT (Reset Y)
+                // LEFT (Reset Vertical Force)
                 case 's': case 'j': 
                     Fx -= 1.0f; 
-                    Fy = 0.0f; // Force vertical stop
+                    Fy = 0.0f; 
                     break; 
 
-                // RIGHT (Reset Y)
+                // RIGHT (Reset Vertical Force)
                 case 'f': case 'l': 
                     Fx += 1.0f; 
-                    Fy = 0.0f; // Force vertical stop
+                    Fy = 0.0f; 
                     break; 
 
-                // --- DIAGONALS (Mix Forces) ---
+                // --- DIAGONALS ---
+                // We keep specific keys for diagonal movement if the user intentionally wants it.
                 case 'w': Fx -= 1.0f; Fy -= 1.0f; break; // Up-Left
                 case 'r': Fx += 1.0f; Fy -= 1.0f; break; // Up-Right
                 case 'v': Fx += 1.0f; Fy += 1.0f; break; // Down-Right
 
-                // BRAKE / STOP (Reset All)
+                // BRAKE / STOP (Reset All Forces)
                 case 'd': case 'k': case ' ': 
                     Fx = 0.0f; Fy = 0.0f; 
                     break;
@@ -81,7 +86,7 @@ int main() {
                     exit(0);
             }
             
-            // Limit Maximum Force (Optional, keeps physics sane)
+            // Limit Maximum Force to keep physics stable
             if (Fx > 10.0f) Fx = 10.0f; if (Fx < -10.0f) Fx = -10.0f;
             if (Fy > 10.0f) Fy = 10.0f; if (Fy < -10.0f) Fy = -10.0f;
 

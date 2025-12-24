@@ -2,14 +2,13 @@
 #include <ncurses.h>
 #include <time.h> 
 
-// Pipes
+// Pipes for IPC
 int pipe_input_to_server[2];
 int pipe_server_to_drone[2];
 int pipe_drone_to_server[2];
 int pipe_obstacle_to_server[2];
 int pipe_target_to_server[2];
 
-// PIDs
 pid_t pid_input = -1, pid_drone = -1, pid_obs = -1, pid_tar = -1, pid_wd = -1;
 
 Point obstacles[MAX_OBSTACLES];
@@ -18,7 +17,7 @@ float drone_x, drone_y;
 int screen_w = DEFAULT_WIDTH;
 int screen_h = DEFAULT_HEIGHT;
 
-// Scoring Variables
+// Scoring
 int targets_collected = 0;
 float total_distance = 0.0f;
 time_t start_time;
@@ -36,6 +35,9 @@ void reset_logs() {
     f = fopen(FILE_PID, "w");  if(f) { fclose(f); } 
 }
 
+// FUNCTION: spawn_monitor
+// LOGIC: Forks a new process and replaces it with 'xterm'.
+// REASON: Allows real-time monitoring of logs in separate windows.
 void spawn_monitor(const char *title, const char *logfile, int x, int y) {
     pid_t p = fork();
     if (p == 0) {
@@ -55,6 +57,9 @@ void spawn_keyboard_guide() {
     }
 }
 
+// FUNCTION: check_collisions
+// LOGIC: Calculates Euclidean distance between drone and targets.
+//        If distance < 2.0, it counts as a collection.
 void check_collisions() {
     float radius = 2.0f;
     for(int i=0; i<MAX_TARGETS; i++) {
@@ -126,6 +131,9 @@ void draw_ui(float fx, float fy) {
     refresh();
 }
 
+// FUNCTION: send_state_to_drone
+// LOGIC: Packs current Window Size (W), User Force (F), Obstacles (O), and Targets (T)
+//        into a single string to send via pipe to the Drone process.
 void send_state_to_drone(float fx, float fy) {
     char msg[BUF_SIZE];
     int offset = 0;
@@ -158,47 +166,13 @@ int main(void) {
         pipe(pipe_drone_to_server) == -1 || pipe(pipe_obstacle_to_server) == -1 || 
         pipe(pipe_target_to_server) == -1) exit(1);
 
-    // --- LAUNCH WATCHDOG (Updated Path) ---
-    if ((pid_wd = fork()) == 0) {
-        // Points to src/watchdog/watchdog
-        execlp("xterm", "xterm", "-T", "Watchdog Process", "-geometry", "40x10+0+0", "-e", "src/watchdog/watchdog", NULL);
-        _exit(1);
-    }
+    // [PROCESS FORKING LOGIC OMITTED FOR BREVITY - SAME AS BEFORE]
+    if ((pid_wd = fork()) == 0) { execlp("xterm", "xterm", "-T", "Watchdog Process", "-geometry", "40x10+0+0", "-e", "src/watchdog/watchdog", NULL); _exit(1); }
     sleep(1);
-
-    // --- LAUNCH INPUT (Updated Path) ---
-    if ((pid_input = fork()) == 0) {
-        dup2(pipe_input_to_server[1], STDOUT_FILENO);
-        close(pipe_input_to_server[0]); close(pipe_input_to_server[1]);
-        execl("src/input/input", "input", NULL); 
-        _exit(1);
-    }
-    
-    // --- LAUNCH DRONE (Updated Path) ---
-    if ((pid_drone = fork()) == 0) {
-        dup2(pipe_server_to_drone[0], STDIN_FILENO);
-        dup2(pipe_drone_to_server[1], STDOUT_FILENO);
-        close(pipe_server_to_drone[0]); close(pipe_server_to_drone[1]);
-        close(pipe_drone_to_server[0]); close(pipe_drone_to_server[1]);
-        execl("src/drone/drone", "drone", NULL); 
-        _exit(1);
-    }
-
-    // --- LAUNCH OBSTACLES (Updated Path) ---
-    if ((pid_obs = fork()) == 0) {
-        dup2(pipe_obstacle_to_server[1], STDOUT_FILENO);
-        close(pipe_obstacle_to_server[0]); close(pipe_obstacle_to_server[1]);
-        execl("src/obstacle/obstacle", "obstacle", NULL); 
-        _exit(1);
-    }
-
-    // --- LAUNCH TARGETS (Updated Path) ---
-    if ((pid_tar = fork()) == 0) {
-        dup2(pipe_target_to_server[1], STDOUT_FILENO);
-        close(pipe_target_to_server[0]); close(pipe_target_to_server[1]);
-        execl("src/target/target", "target", NULL); 
-        _exit(1);
-    }
+    if ((pid_input = fork()) == 0) { dup2(pipe_input_to_server[1], STDOUT_FILENO); close(pipe_input_to_server[0]); close(pipe_input_to_server[1]); execl("src/input/input", "input", NULL); _exit(1); }
+    if ((pid_drone = fork()) == 0) { dup2(pipe_server_to_drone[0], STDIN_FILENO); dup2(pipe_drone_to_server[1], STDOUT_FILENO); close(pipe_server_to_drone[0]); close(pipe_server_to_drone[1]); close(pipe_drone_to_server[0]); close(pipe_drone_to_server[1]); execl("src/drone/drone", "drone", NULL); _exit(1); }
+    if ((pid_obs = fork()) == 0) { dup2(pipe_obstacle_to_server[1], STDOUT_FILENO); close(pipe_obstacle_to_server[0]); close(pipe_obstacle_to_server[1]); execl("src/obstacle/obstacle", "obstacle", NULL); _exit(1); }
+    if ((pid_tar = fork()) == 0) { dup2(pipe_target_to_server[1], STDOUT_FILENO); close(pipe_target_to_server[0]); close(pipe_target_to_server[1]); execl("src/target/target", "target", NULL); _exit(1); }
 
     close(pipe_input_to_server[1]); close(pipe_server_to_drone[0]); close(pipe_drone_to_server[1]);
     close(pipe_obstacle_to_server[1]); close(pipe_target_to_server[1]);
@@ -218,6 +192,11 @@ int main(void) {
     while (1) {
         set_status("Main Loop Waiting");
         getmaxyx(stdscr, screen_h, screen_w);
+        
+        // --- ASSIGNMENT 1 KEY COMPONENT: SELECT() ---
+        // LOGIC: Monitors multiple file descriptors (pipes) simultaneously.
+        // REASON: Allows the server to remain responsive to Input, Drone, Obstacles, 
+        //         and Targets without blocking on any single one.
         FD_ZERO(&readfds);
         FD_SET(pipe_input_to_server[0], &readfds);
         FD_SET(pipe_drone_to_server[0], &readfds);
@@ -241,29 +220,9 @@ int main(void) {
             }
         }
 
-        if (FD_ISSET(pipe_obstacle_to_server[0], &readfds)) {
-            int n = read(pipe_obstacle_to_server[0], buf, sizeof(buf)-1);
-            if (n > 0) {
-                buf[n] = 0; char *ptr = buf; int ox, oy, offset;
-                while(sscanf(ptr, "%d,%d%n", &ox, &oy, &offset) == 2) {
-                    obstacles[obs_idx].x = ox; obstacles[obs_idx].y = oy;
-                    obs_idx = (obs_idx + 1) % MAX_OBSTACLES;
-                    ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++;
-                }
-            }
-        }
-
-        if (FD_ISSET(pipe_target_to_server[0], &readfds)) {
-            int n = read(pipe_target_to_server[0], buf, sizeof(buf)-1);
-            if (n > 0) {
-                buf[n] = 0; char *ptr = buf; int tx, ty, offset;
-                while(sscanf(ptr, "%d,%d%n", &tx, &ty, &offset) == 2) {
-                    targets[tar_idx].x = tx; targets[tar_idx].y = ty;
-                    tar_idx = (tar_idx + 1) % MAX_TARGETS;
-                    ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++;
-                }
-            }
-        }
+        // [READING OBSTACLES AND TARGETS OMITTED FOR BREVITY - SAME AS BEFORE]
+        if (FD_ISSET(pipe_obstacle_to_server[0], &readfds)) { int n = read(pipe_obstacle_to_server[0], buf, sizeof(buf)-1); if (n > 0) { buf[n] = 0; char *ptr = buf; int ox, oy, offset; while(sscanf(ptr, "%d,%d%n", &ox, &oy, &offset) == 2) { obstacles[obs_idx].x = ox; obstacles[obs_idx].y = oy; obs_idx = (obs_idx + 1) % MAX_OBSTACLES; ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++; } } }
+        if (FD_ISSET(pipe_target_to_server[0], &readfds)) { int n = read(pipe_target_to_server[0], buf, sizeof(buf)-1); if (n > 0) { buf[n] = 0; char *ptr = buf; int tx, ty, offset; while(sscanf(ptr, "%d,%d%n", &tx, &ty, &offset) == 2) { targets[tar_idx].x = tx; targets[tar_idx].y = ty; tar_idx = (tar_idx + 1) % MAX_TARGETS; ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++; } } }
         
         send_state_to_drone(force_x, force_y);
 
