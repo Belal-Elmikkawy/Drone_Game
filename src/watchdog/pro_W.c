@@ -8,9 +8,12 @@ typedef struct {
 
 MonitoredProcess processes[10];
 int proc_count = 0;
+pid_t server_pid = -1;
 
 void load_pids() {
     proc_count = 0;
+    server_pid = -1;
+    
     FILE *f = fopen(FILE_PID, "r");
     if (!f) return;
     
@@ -22,6 +25,12 @@ void load_pids() {
     while(fscanf(f, "%s %d", name, &pid) == 2) {
         strcpy(processes[proc_count].name, name);
         processes[proc_count].pid = pid;
+        
+        // Locate the Server PID so we can kill it if needed
+        if(strcmp(name, "Server") == 0) {
+            server_pid = pid;
+        }
+        
         proc_count++;
         if(proc_count >= 10) break;
     }
@@ -51,21 +60,36 @@ int main() {
         
         for(int i=0; i<proc_count; i++) {
             // Poll process by sending SIGUSR1
-            // The process will respond by writing to the log file
+            // The process will respond by writing to the log file (via signal handler)
             int res = kill(processes[i].pid, SIGUSR1);
             
             if (res == 0) {
                 mvprintw(3+i, 2, "[%s] (PID %d): ACTIVE", processes[i].name, processes[i].pid);
             } else {
-                mvprintw(3+i, 2, "[%s] (PID %d): UNRESPONSIVE!", processes[i].name, processes[i].pid);
-                log_message(LOG_WATCHDOG, "ALERT: Process Unresponsive");
+                // --- ASSIGNMENT 2 REQUIREMENT: STOP SYSTEM ---
+                mvprintw(3+i, 2, "[%s] (PID %d): UNRESPONSIVE! STOPPING SYSTEM...", processes[i].name, processes[i].pid);
+                refresh();
+                
+                log_message(LOG_WATCHDOG, "ALERT: Process Unresponsive. Killing Server to stop system.");
+                
+                // Kill Server to cascade shutdown
+                if(server_pid > 0) {
+                    kill(server_pid, SIGKILL);
+                } else {
+                    // Fallback: Kill the specific dead process (if zombie) and exit
+                    kill(processes[i].pid, SIGKILL);
+                }
+                
+                sleep(2);
+                endwin();
+                exit(1); 
             }
         }
         
         mvprintw(15, 0, "Logs are written to %s", LOG_WATCHDOG);
         refresh();
         
-        sleep(2); // Cycle T [cite: 129]
+        sleep(2); // Cycle T
     }
 
     endwin();
