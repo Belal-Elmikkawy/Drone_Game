@@ -50,6 +50,7 @@ int main() {
                     break; 
 
                 // DOWN (Reset Horizontal Force)
+                // 'c' is central-bottom for left hand, ',' is for right hand
                 case 'c': case ',': 
                     Fy += 1.0f; 
                     Fx = 0.0f; 
@@ -69,27 +70,27 @@ int main() {
 
                 // --- DIAGONAL DIRECTIONS ---
                 
-                // Up-Left
-                case 'w': 
+                // Up-Left (Left hand: 'w', Right hand: 'u')
+                case 'w': case 'u':
                     Fx -= 1.0f; 
                     Fy -= 1.0f; 
                     break; 
                 
-                // Up-Right
-                case 'r': 
+                // Up-Right (Left hand: 'r', Right hand: 'o')
+                case 'r': case 'o':
                     Fx += 1.0f; 
                     Fy -= 1.0f; 
                     break; 
                 
-                // Down-Left 
+                // Down-Left (Left hand: 'x', Right hand: 'm')
                 // [BUG FIX] Previously 'x' was duplicated as DOWN. Fixed to Diagonal.
-                case 'x': 
+                case 'x': case 'm':
                     Fx -= 1.0f; 
                     Fy += 1.0f; 
                     break;
 
-                // Down-Right
-                case 'v': 
+                // Down-Right (Left hand: 'v', Right hand: '.')
+                case 'v': case '.':
                     Fx += 1.0f; 
                     Fy += 1.0f; 
                     break; 

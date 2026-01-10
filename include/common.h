@@ -11,10 +11,22 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
-#include <sys/file.h> // Required for flock
+#include <sys/file.h> 
 #include <signal.h>
 #include <time.h>
 #include <math.h>
+
+// --- ADDED FOR ASSIGNMENT 3 (NETWORK) ---
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+// Network Constants (THESE WERE MISSING)
+#define NET_PORT 5555
+#define MODE_STANDALONE 0
+#define MODE_SERVER     1
+#define MODE_CLIENT     2
 
 // Dimensions
 #define DEFAULT_WIDTH  100
@@ -30,7 +42,6 @@
 // Game Rules
 #define MAX_OBSTACLES 10
 #define MAX_TARGETS 5
-#define COLLISION_DIST 2.0f 
 
 // Log Files
 #define LOG_INPUT "input.log"
@@ -45,7 +56,6 @@ typedef struct { int x; int y; } Point;
 
 // --- HELPER FUNCTIONS ---
 
-// 1. File Locking Helper for Logs
 static inline void log_message(const char *filename, const char *msg) {
     int fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (fd == -1) return;
@@ -61,7 +71,6 @@ static inline void log_message(const char *filename, const char *msg) {
     close(fd);
 }
 
-// 2. Process Registration Helper
 static inline void register_process(const char *name) {
     int fd = open(FILE_PID, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (fd == -1) return;
@@ -74,7 +83,6 @@ static inline void register_process(const char *name) {
     close(fd);
 }
 
-// 3. Watchdog Helpers
 static char PROC_NAME[32];
 static char CURRENT_STATUS[64] = "Initializing"; 
 
