@@ -18,23 +18,17 @@ void load_pids() {
     if (!f) return;
     
     int fd = fileno(f);
-    flock(fd, LOCK_SH); // Read Lock
+    flock(fd, LOCK_SH); 
 
     char name[32];
     int pid;
     while(fscanf(f, "%s %d", name, &pid) == 2) {
         strcpy(processes[proc_count].name, name);
         processes[proc_count].pid = pid;
-        
-        // Locate the Server PID so we can kill it if needed
-        if(strcmp(name, "Server") == 0) {
-            server_pid = pid;
-        }
-        
+        if(strcmp(name, "Server") == 0) server_pid = pid;
         proc_count++;
         if(proc_count >= 10) break;
     }
-    
     flock(fd, LOCK_UN);
     fclose(f);
 }
@@ -42,7 +36,6 @@ void load_pids() {
 int main() {
     initscr(); cbreak(); noecho(); curs_set(0);
     
-    // Clear old logs
     FILE *f = fopen(LOG_WATCHDOG, "w"); if(f) fclose(f);
     
     register_process("Watchdog");
@@ -59,26 +52,18 @@ int main() {
         mvprintw(2, 0, "--------------------------------");
         
         for(int i=0; i<proc_count; i++) {
-            // Poll process by sending SIGUSR1
-            // The process will respond by writing to the log file (via signal handler)
             int res = kill(processes[i].pid, SIGUSR1);
             
             if (res == 0) {
                 mvprintw(3+i, 2, "[%s] (PID %d): ACTIVE", processes[i].name, processes[i].pid);
             } else {
-                // --- ASSIGNMENT 2 REQUIREMENT: STOP SYSTEM ---
                 mvprintw(3+i, 2, "[%s] (PID %d): UNRESPONSIVE! STOPPING SYSTEM...", processes[i].name, processes[i].pid);
                 refresh();
                 
                 log_message(LOG_WATCHDOG, "ALERT: Process Unresponsive. Killing Server to stop system.");
                 
-                // Kill Server to cascade shutdown
-                if(server_pid > 0) {
-                    kill(server_pid, SIGKILL);
-                } else {
-                    // Fallback: Kill the specific dead process (if zombie) and exit
-                    kill(processes[i].pid, SIGKILL);
-                }
+                if(server_pid > 0) kill(server_pid, SIGKILL);
+                else kill(processes[i].pid, SIGKILL);
                 
                 sleep(2);
                 endwin();
@@ -88,8 +73,7 @@ int main() {
         
         mvprintw(15, 0, "Logs are written to %s", LOG_WATCHDOG);
         refresh();
-        
-        sleep(2); // Cycle T
+        sleep(2); 
     }
 
     endwin();

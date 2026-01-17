@@ -1,13 +1,9 @@
-#include "common.h"
+#include "../include/common.h"
 #include <ncurses.h>
 #include <time.h> 
-#include <unistd.h> // for access()
-
-// --- NETWORK HEADERS (Assignment 3 Requirement) ---
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+#include <ctype.h>
+#include <signal.h>
+#include <math.h>
 
 // --- IPC PIPES ---
 int pipe_input_to_server[2];
@@ -16,8 +12,12 @@ int pipe_drone_to_server[2];
 int pipe_obstacle_to_server[2];
 int pipe_target_to_server[2];
 
+// Network Bridge Pipes
+int pipe_server_to_net[2];
+int pipe_net_to_server[2];
+
 // --- PROCESS PIDs ---
-pid_t pid_input = -1, pid_drone = -1, pid_obs = -1, pid_tar = -1, pid_wd = -1;
+pid_t pid_input = -1, pid_drone = -1, pid_obs = -1, pid_tar = -1, pid_wd = -1, pid_net = -1;
 
 // --- WORLD STATE ---
 Point obstacles[MAX_OBSTACLES];
@@ -26,160 +26,22 @@ float drone_x, drone_y;
 int screen_w = DEFAULT_WIDTH;
 int screen_h = DEFAULT_HEIGHT;
 
+int app_mode = MODE_STANDALONE;
+char server_ip[64] = "127.0.0.1";
+char server_port[10] = "5555"; 
+
+DroneState remote_drone_pos = {0,0}; 
+
 // --- SCORING VARIABLES ---
 int targets_collected = 0;
 float total_distance = 0.0f;
-time_t start_time;
 int final_score = 0;
+time_t start_time;
 
-// Cyclic Buffer Indexes
 int obs_idx = 0;
 int tar_idx = 0;
 
-// --- ASSIGNMENT 3 VARIABLES ---
-int app_mode = MODE_STANDALONE; 
-int sock_fd = -1;
-Point remote_drone = {0, 0};
-char server_ip[64] = "127.0.0.1";
-
-// --- HELPER: RESOLVE PATH ---
-const char* resolve_path(const char* path_a, const char* path_b, const char* path_c) {
-    if (access(path_a, F_OK) == 0) return path_a;
-    if (access(path_b, F_OK) == 0) return path_b;
-    if (access(path_c, F_OK) == 0) return path_c;
-    return path_a; 
-}
-
-// --- ASSIGNMENT 3: MODE SELECTION MENU ---
-void get_user_mode() {
-    remove("mode_selection.txt");
-
-    FILE *script = fopen("launcher.sh", "w");
-    if (!script) { perror("Failed to write script"); exit(1); }
-
-    fprintf(script, "#!/bin/bash\n");
-    fprintf(script, "while true; do\n");
-    fprintf(script, "  echo '====================================='\n");
-    fprintf(script, "  echo '   ASSIGNMENT 3: DRONE SETUP         '\n");
-    fprintf(script, "  echo '====================================='\n");
-    fprintf(script, "  echo 'Select Mode:'\n");
-    fprintf(script, "  echo '  [S] SERVER  (Host)'\n");
-    fprintf(script, "  echo '  [C] CLIENT  (Join)'\n");
-    fprintf(script, "  echo '  [L] LOCAL   (Standalone)'\n");
-    fprintf(script, "  read -p 'Choice: ' choice\n");
-    fprintf(script, "  if [[ \"$choice\" == \"s\" || \"$choice\" == \"S\" ]]; then\n");
-    fprintf(script, "      echo \"SERVER\" > mode_selection.txt; break\n");
-    fprintf(script, "  elif [[ \"$choice\" == \"c\" || \"$choice\" == \"C\" ]]; then\n");
-    fprintf(script, "      read -p 'Enter IP [127.0.0.1]: ' ip\n");
-    fprintf(script, "      if [ -z \"$ip\" ]; then ip=\"127.0.0.1\"; fi\n");
-    fprintf(script, "      echo \"CLIENT $ip\" > mode_selection.txt; break\n");
-    fprintf(script, "  elif [[ \"$choice\" == \"l\" || \"$choice\" == \"L\" ]]; then\n");
-    fprintf(script, "      echo \"LOCAL\" > mode_selection.txt; break\n");
-    fprintf(script, "  fi\n");
-    fprintf(script, "done\n");
-    fclose(script);
-    system("chmod +x launcher.sh");
-
-    printf("Launching Configuration Menu...\n");
-    system("xterm -T 'Drone Config' -geometry 60x15 -e ./launcher.sh &");
-
-    printf("Waiting for user selection...\n");
-    FILE *file = NULL;
-    while (1) {
-        file = fopen("mode_selection.txt", "r");
-        if (file) break; 
-        usleep(100000); 
-    }
-
-    char mode_str[32];
-    fscanf(file, "%s", mode_str);
-    
-    if (strcmp(mode_str, "SERVER") == 0) app_mode = MODE_SERVER;
-    else if (strcmp(mode_str, "CLIENT") == 0) {
-        app_mode = MODE_CLIENT;
-        fscanf(file, "%s", server_ip);
-    } else {
-        app_mode = MODE_STANDALONE;
-    }
-    
-    fclose(file);
-    remove("launcher.sh");
-    remove("mode_selection.txt");
-    sleep(1);
-}
-
-// --- ASSIGNMENT 3: NETWORK HELPERS ---
-void send_net_msg(const char *str) {
-    if (sock_fd < 0) return;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%s\n", str);
-    write(sock_fd, buf, strlen(buf));
-}
-
-int wait_ack(const char *expected) {
-    char buf[128]; memset(buf, 0, sizeof(buf));
-    int n = read(sock_fd, buf, sizeof(buf)-1);
-    if (n <= 0) return 0;
-    char *p = strchr(buf, '\n'); if (p) *p = 0;
-    if (strncmp(buf, expected, strlen(expected)) == 0) return 1;
-    return 0;
-}
-
-void to_virtual(int local_x, int local_y, int *virt_x, int *virt_y) {
-    *virt_x = local_x;
-    *virt_y = screen_h - local_y; 
-}
-
-void from_virtual(int virt_x, int virt_y, int *local_x, int *local_y) {
-    *local_x = virt_x;
-    *local_y = screen_h - virt_y;
-}
-
-void init_network() {
-    if (app_mode == MODE_STANDALONE) return;
-
-    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(NET_PORT);
-
-    if (app_mode == MODE_SERVER) {
-        serv_addr.sin_addr.s_addr = INADDR_ANY;
-        int opt = 1; setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        bind(sock_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
-        listen(sock_fd, 1);
-        int newsock = accept(sock_fd, NULL, NULL);
-        close(sock_fd); sock_fd = newsock;
-    } else {
-        inet_pton(AF_INET, server_ip, &serv_addr.sin_addr);
-        connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-    }
-    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
-}
-
-void perform_handshake() {
-    if (app_mode == MODE_STANDALONE) return;
-    if (app_mode == MODE_SERVER) {
-        send_net_msg("ok"); wait_ack("ook");
-        char msg[64]; getmaxyx(stdscr, screen_h, screen_w); 
-        snprintf(msg, sizeof(msg), "size %d %d", screen_w, screen_h);
-        send_net_msg(msg); wait_ack("sok");
-    } else {
-        wait_ack("ok"); send_net_msg("ook");
-        char buf[128]; int n = read(sock_fd, buf, sizeof(buf)-1);
-        if (n > 0) {
-            buf[n] = 0; int w, h;
-            if (sscanf(buf, "size %d %d", &w, &h) == 2) {
-                screen_w = w; screen_h = h;
-                resizeterm(screen_h, screen_w);
-            }
-        }
-        send_net_msg("sok");
-    }
-}
-
-// --- STANDARD FUNCTIONS ---
+// --- FUNCTIONS ---
 
 void reset_logs() {
     FILE *f;
@@ -187,6 +49,7 @@ void reset_logs() {
     f = fopen(LOG_DRONE, "w"); if(f) { fprintf(f, "--- PHYSICS ENGINE LOG ---\n"); fclose(f); }
     f = fopen(LOG_GAME,  "w"); if(f) { fprintf(f, "--- GAME EVENTS ---\n"); fclose(f); }
     f = fopen(LOG_WATCHDOG,"w"); if(f) { fprintf(f, "--- WATCHDOG LOG ---\n"); fclose(f); }
+    f = fopen(LOG_NETWORK,"w"); if(f) { fprintf(f, "--- NETWORK PROTOCOL LOG ---\n"); fclose(f); } 
     f = fopen(FILE_PID, "w");  if(f) { fclose(f); } 
 }
 
@@ -194,8 +57,7 @@ void spawn_monitor(const char *title, const char *logfile, int x, int y) {
     pid_t p = fork();
     if (p == 0) {
         char geometry[32]; sprintf(geometry, "90x15+%d+%d", x, y);
-        execlp("xterm", "xterm", "-T", title, "-geometry", geometry, "-e", "tail", "-f", logfile, NULL);
-        perror("Failed to spawn xterm monitor");
+        execlp("xterm", "xterm", "-T", title, "-geometry", geometry, "-e", "tail", "-F", logfile, NULL);
         exit(0);
     }
 }
@@ -204,9 +66,8 @@ void spawn_keyboard_guide() {
     pid_t p = fork();
     if (p == 0) {
         char cmd[1024];
-        sprintf(cmd, "echo 'DRONE CONTROLS'; echo '[E][R] Up'; echo '[S][F] Left/Right'; echo '[X][V] Down'; echo '[SPACE] Brake'; tail -f %s", LOG_INPUT);
+        sprintf(cmd, "echo 'DRONE CONTROLS'; echo '[E][R] Up'; echo '[S][F] Left/Right'; echo '[X][V] Down'; echo '[SPACE] Brake'; tail -F %s", LOG_INPUT);
         execlp("xterm", "xterm", "-T", "CONTROLS", "-geometry", "50x25+0+0", "-e", "sh", "-c", cmd, NULL);
-        perror("Failed to spawn keyboard guide");
         exit(0);
     }
 }
@@ -234,87 +95,96 @@ void init_world() {
 }
 
 void cleanup_processes() {
-    if (sock_fd > 0) { send_net_msg("q"); close(sock_fd); } // Network cleanup
     endwin(); 
     if (pid_input > 0) kill(pid_input, SIGKILL);
     if (pid_drone > 0) kill(pid_drone, SIGKILL);
     if (pid_obs > 0)   kill(pid_obs, SIGKILL);
     if (pid_tar > 0)   kill(pid_tar, SIGKILL);
     if (pid_wd > 0)    kill(pid_wd, SIGKILL);
+    if (pid_net > 0)   kill(pid_net, SIGKILL);
 }
 
 void init_ncurses_safe() {
     initscr(); cbreak(); noecho(); curs_set(0); start_color();
-    init_pair(1, COLOR_BLUE, COLOR_BLACK);    // Drone
-    init_pair(2, COLOR_MAGENTA, COLOR_BLACK); // UI Borders
-    init_pair(3, COLOR_GREEN, COLOR_BLACK);   // Obstacles
-    init_pair(4, COLOR_YELLOW, COLOR_BLACK);  // Targets
-    init_pair(5, COLOR_RED, COLOR_BLACK);     // Remote Drone
+    init_pair(1, COLOR_BLUE, COLOR_BLACK);    
+    init_pair(2, COLOR_MAGENTA, COLOR_BLACK); 
+    init_pair(3, COLOR_GREEN, COLOR_BLACK);   
+    init_pair(4, COLOR_YELLOW, COLOR_BLACK);  
+}
+
+void get_user_mode() {
+    endwin(); 
+    printf("1. Server\n2. Client\n3. Local\nSelect: ");
+    int c; 
+    if(scanf("%d", &c) != 1) c = 3;
+    
+    if(c == 1) { // SERVER
+        app_mode = MODE_SERVER;
+        printf("Hosting on Port (default 5555): ");
+        char buf[10];
+        getchar(); // Consume newline
+        fgets(buf, sizeof(buf), stdin);
+        if(isdigit(buf[0])) {
+            buf[strcspn(buf, "\n")] = 0; 
+            strcpy(server_port, buf);
+        }
+    }
+    else if(c == 2) { // CLIENT
+        app_mode = MODE_CLIENT;
+        printf("Server IP: "); scanf("%63s", server_ip);
+        printf("Server Port: "); scanf("%9s", server_port);
+    } 
+    else {
+        app_mode = MODE_STANDALONE;
+    }
 }
 
 void draw_ui(float fx, float fy) {
     erase();
-    
-    // Draw Borders & Stats
     attron(COLOR_PAIR(2));
-    for(int x=0; x<screen_w; x++) { mvaddch(0, x, '-'); mvaddch(screen_h-1, x, '-'); }
-    for(int y=0; y<screen_h; y++) { mvaddch(y, 0, '|'); mvaddch(y, screen_w-1, '|'); }
-    
-    mvprintw(0, 2, " Mode: %s | SCORE: %d | Targets: %d ", (app_mode==0)?"LOCAL":((app_mode==1)?"SERVER":"CLIENT"), final_score, targets_collected);
-    mvprintw(screen_h-1, 2, " Cmd Force: %.1f, %.1f | Time: %lds | Dist: %.0fm ", fx, fy, time(NULL)-start_time, total_distance);
+    box(stdscr, 0, 0);
+    mvprintw(0, 2, " Mode: %s | Port: %s ", 
+             (app_mode==MODE_STANDALONE)?"LOCAL":((app_mode==MODE_SERVER)?"SERVER":"CLIENT"),
+             (app_mode==MODE_STANDALONE)?"N/A":server_port);
     attroff(COLOR_PAIR(2));
 
-    // Draw Obstacles
     attron(COLOR_PAIR(3));
-    for (int i = 0; i < MAX_OBSTACLES; ++i) {
-        if(obstacles[i].x > 0 && obstacles[i].x < screen_w && obstacles[i].y > 0 && obstacles[i].y < screen_h)
-            mvaddch(obstacles[i].y, obstacles[i].x, 'O');
-    }
+    for (int i = 0; i < MAX_OBSTACLES; ++i) 
+        if(obstacles[i].x>0) mvaddch(obstacles[i].y, obstacles[i].x, 'O');
     attroff(COLOR_PAIR(3));
-    
-    // Draw Remote Drone (As an Enemy/Obstacle)
-    if (app_mode != MODE_STANDALONE && remote_drone.x != 0) {
-        attron(COLOR_PAIR(5));
-        mvaddch(remote_drone.y, remote_drone.x, 'X');
-        attroff(COLOR_PAIR(5));
-    }
-    
-    // Draw Targets (Only in Local Mode per assignment)
-    if (app_mode == MODE_STANDALONE) {
-        attron(COLOR_PAIR(4));
-        for (int i = 0; i < MAX_TARGETS; ++i) {
-            if(targets[i].x > 0 && targets[i].x < screen_w && targets[i].y > 0 && targets[i].y < screen_h)
-                mvaddch(targets[i].y, targets[i].x, '1' + i);
-        }
-        attroff(COLOR_PAIR(4));
+
+    if(app_mode != MODE_STANDALONE && remote_drone_pos.x != 0) {
+        attron(COLOR_PAIR(3)); 
+        mvaddch((int)remote_drone_pos.y, (int)remote_drone_pos.x, 'X');
+        attroff(COLOR_PAIR(3));
     }
 
-    // Draw Local Drone
+    attron(COLOR_PAIR(4));
+    for (int i = 0; i < MAX_TARGETS; ++i) {
+        if(targets[i].x > 0) mvaddch(targets[i].y, targets[i].x, '1' + i);
+    }
+    attroff(COLOR_PAIR(4));
+
     attron(COLOR_PAIR(1));
     int dx = (int)drone_x; int dy = (int)drone_y;
     if (dx < 1) dx = 1; if (dx >= screen_w-1) dx = screen_w-2;
     if (dy < 1) dy = 1; if (dy >= screen_h-1) dy = screen_h-2;
     mvaddch(dy, dx, '+');
     attroff(COLOR_PAIR(1));
-    
     refresh();
 }
 
 void send_state_to_drone(float fx, float fy) {
     char msg[BUF_SIZE];
-    int offset = 0;
+    int offset = sprintf(msg, "W:%d,%d|F:%.2f,%.2f|O:", screen_w, screen_h, fx, fy);
     
-    offset += sprintf(msg + offset, "W:%d,%d|F:%.2f,%.2f|", screen_w, screen_h, fx, fy);
-    
-    offset += sprintf(msg + offset, "O:");
     for(int i=0; i<MAX_OBSTACLES; i++) 
         if(obstacles[i].x != 0) offset += sprintf(msg + offset, "%d,%d;", obstacles[i].x, obstacles[i].y);
     
-    // Inject Remote Drone as an obstacle so physics engine repels it
-    if (app_mode != MODE_STANDALONE && remote_drone.x != 0) {
-        offset += sprintf(msg + offset, "%d,%d;", remote_drone.x, remote_drone.y);
+    if(app_mode != MODE_STANDALONE && remote_drone_pos.x != 0) {
+        offset += sprintf(msg + offset, "%d,%d;", (int)remote_drone_pos.x, (int)remote_drone_pos.y);
     }
-    
+
     msg[offset-1] = '|'; 
     offset += sprintf(msg + offset, "T:");
     for(int i=0; i<MAX_TARGETS; i++) 
@@ -324,154 +194,149 @@ void send_state_to_drone(float fx, float fy) {
     dprintf(pipe_server_to_drone[1], "%s", msg);
 }
 
+// --- MAIN ---
 int main(void) {
     srand(time(NULL)); 
-    // --- [ASSIGNMENT 2 CORRECTION] ---
-    // Clears logs at startup to prevent reading old data
-    reset_logs();
+    reset_logs(); 
     
-    // 1. SELECT MODE
-    get_user_mode();
-    
-    // --- [ASSIGNMENT 2 CORRECTION] ---
-    // Registers the Server PID so it can be monitored
+    // 1. Register PID immediately
     register_process("Server");
     
-    // 2. INIT NETWORK (If Server/Client selected)
-    init_network();
+    // 2. ASK USER FOR MODE *BEFORE* SETTING UP WATCHDOG
+    get_user_mode(); 
+    
+    // 3. NOW check if we need the watchdog handler
+    // If we are Server or Client, the Watchdog will be spawned later,
+    // so we MUST register the signal handler now to prevent being killed.
+    if(app_mode != MODE_STANDALONE) {
+        setup_watchdog_monitor("Server");
+    }
 
-    // 3. START GAME
+    // Create Pipes
+    if (pipe(pipe_input_to_server) == -1)    { perror("Pipe Input"); exit(1); }
+    if (pipe(pipe_server_to_drone) == -1)    { perror("Pipe S->D"); exit(1); }
+    if (pipe(pipe_drone_to_server) == -1)    { perror("Pipe D->S"); exit(1); }
+    if (pipe(pipe_obstacle_to_server) == -1) { perror("Pipe Obst"); exit(1); }
+    if (pipe(pipe_target_to_server) == -1)   { perror("Pipe Targ"); exit(1); }
+
+    // Network Pipes
+    if(app_mode != MODE_STANDALONE) {
+        if(pipe(pipe_server_to_net) == -1) { perror("Pipe NetTx"); exit(1); }
+        if(pipe(pipe_net_to_server) == -1) { perror("Pipe NetRx"); exit(1); }
+    }
+
+    start_time = time(NULL);
+    
     spawn_keyboard_guide(); 
-    spawn_monitor("PHYSICS", LOG_DRONE, 400, 0); 
-    spawn_monitor("GAME", LOG_GAME, 400, 300);
-    spawn_monitor("WATCHDOG LOG", LOG_WATCHDOG, 400, 600); 
+    
+    if (app_mode != MODE_STANDALONE) {
+        spawn_monitor("PHYSICS", LOG_DRONE, 400, 0); 
+        spawn_monitor("NETWORK TRAFFIC", LOG_NETWORK, 800, 0);
+    }
 
     init_world();
-    start_time = time(NULL);
 
-    // --- [BUG FIX] ERROR HANDLING FOR PIPES ---
-    if (pipe(pipe_input_to_server) == -1) { perror("Failed to create pipe_input_to_server"); exit(1); }
-    if (pipe(pipe_server_to_drone) == -1) { perror("Failed to create pipe_server_to_drone"); exit(1); }
-    if (pipe(pipe_drone_to_server) == -1) { perror("Failed to create pipe_drone_to_server"); exit(1); }
-    if (pipe(pipe_obstacle_to_server) == -1) { perror("Failed to create pipe_obstacle_to_server"); exit(1); }
-    if (pipe(pipe_target_to_server) == -1) { perror("Failed to create pipe_target_to_server"); exit(1); }
-
-    const char *p; 
-
-    // --- LAUNCH PROCESSES ---
-    
-    // --- [ASSIGNMENT 2 CORRECTION] ---
-    // In Server/Client mode, Obstacles, Targets, and Watchdog must be DISABLED.
-    // We only launch them if we are in STANDALONE (Local) mode.
-    if (app_mode == MODE_STANDALONE) {
-        setup_watchdog_monitor("Server");
-        
+    // Spawn Watchdog (ONLY in Server/Client mode)
+    if (app_mode != MODE_STANDALONE) {
         if ((pid_wd = fork()) == 0) {
-            p = resolve_path("src/watchdog/watchdog", "../watchdog/watchdog", "./watchdog");
-            execlp("xterm", "xterm", "-T", "Watchdog Process", "-geometry", "40x10+0+0", "-e", p, NULL);
-            perror("execlp watchdog failed"); 
+            execlp("xterm", "xterm", "-T", "Watchdog", "-e", "./src/watchdog/watchdog", NULL); 
             _exit(1);
         }
-        sleep(1);
+    }
 
+    // Spawn Obstacles (Only in Standalone)
+    if (app_mode == MODE_STANDALONE) {
         if ((pid_obs = fork()) == 0) {
             dup2(pipe_obstacle_to_server[1], STDOUT_FILENO);
             close(pipe_obstacle_to_server[0]); close(pipe_obstacle_to_server[1]);
-            p = resolve_path("src/obstacle/obstacle", "../obstacle/obstacle", "./obstacle");
-            execl(p, "obstacle", NULL); 
-            perror("execl obstacle failed");
-            _exit(1);
+            execl("src/obstacle/obstacle", "obstacle", NULL); _exit(1);
         }
-
         if ((pid_tar = fork()) == 0) {
             dup2(pipe_target_to_server[1], STDOUT_FILENO);
             close(pipe_target_to_server[0]); close(pipe_target_to_server[1]);
-            p = resolve_path("src/target/target", "../target/target", "./target");
-            execl(p, "target", NULL); 
-            perror("execl target failed");
-            _exit(1);
+            execl("src/target/target", "target", NULL); _exit(1);
         }
     }
 
-    // Always launch Input and Drone
+    // Spawn Network Bridge
+    if (app_mode != MODE_STANDALONE) {
+        if ((pid_net = fork()) == 0) {
+            char mode_str[10], fd_rx[10], fd_tx[10];
+            sprintf(mode_str, "%d", app_mode);
+            sprintf(fd_rx, "%d", pipe_server_to_net[0]); 
+            sprintf(fd_tx, "%d", pipe_net_to_server[1]); 
+            
+            close(pipe_server_to_net[1]); close(pipe_net_to_server[0]);
+            
+            execl("src/network/network", "network", mode_str, fd_rx, fd_tx, server_port, server_ip, NULL);
+            perror("Failed to spawn network bridge"); _exit(1);
+        }
+        close(pipe_server_to_net[0]); close(pipe_net_to_server[1]);
+        fcntl(pipe_net_to_server[0], F_SETFL, O_NONBLOCK);
+    }
+
+    // Spawn Input
     if ((pid_input = fork()) == 0) {
         dup2(pipe_input_to_server[1], STDOUT_FILENO);
         close(pipe_input_to_server[0]); close(pipe_input_to_server[1]);
-        p = resolve_path("src/input/input", "../input/input", "./input");
-        execl(p, "input", NULL); 
-        perror("execl input failed");
-        _exit(1);
+        execl("src/input/input", "input", NULL); _exit(1);
     }
     
+    // Spawn Drone
     if ((pid_drone = fork()) == 0) {
         dup2(pipe_server_to_drone[0], STDIN_FILENO);
         dup2(pipe_drone_to_server[1], STDOUT_FILENO);
         close(pipe_server_to_drone[0]); close(pipe_server_to_drone[1]);
         close(pipe_drone_to_server[0]); close(pipe_drone_to_server[1]);
-        p = resolve_path("src/drone/drone", "../drone/drone", "./drone");
-        execl(p, "drone", NULL); 
-        perror("execl drone failed");
-        _exit(1);
+        execl("src/drone/drone", "drone", NULL); _exit(1);
     }
 
-    // Close unused pipes
-    close(pipe_input_to_server[1]); close(pipe_server_to_drone[0]); close(pipe_drone_to_server[1]);
-    close(pipe_obstacle_to_server[1]); close(pipe_target_to_server[1]);
+    close(pipe_input_to_server[1]); close(pipe_server_to_drone[0]); 
+    close(pipe_drone_to_server[1]); close(pipe_obstacle_to_server[1]); 
+    close(pipe_target_to_server[1]);
 
-    // Set non-blocking I/O
     fcntl(pipe_input_to_server[0], F_SETFL, O_NONBLOCK);
     fcntl(pipe_drone_to_server[0], F_SETFL, O_NONBLOCK);
-    if (app_mode == MODE_STANDALONE) {
-        fcntl(pipe_obstacle_to_server[0], F_SETFL, O_NONBLOCK);
-        fcntl(pipe_target_to_server[0], F_SETFL, O_NONBLOCK);
-    }
+    fcntl(pipe_obstacle_to_server[0], F_SETFL, O_NONBLOCK);
+    fcntl(pipe_target_to_server[0], F_SETFL, O_NONBLOCK);
 
     init_ncurses_safe();
-    perform_handshake(); 
-    
     draw_ui(0, 0);
 
     float force_x = 0, force_y = 0;
     char buf[BUF_SIZE];
     fd_set readfds;
 
+    // --- MAIN LOOP ---
     while (1) {
-        set_status("Main Loop Waiting");
         getmaxyx(stdscr, screen_h, screen_w);
         FD_ZERO(&readfds);
         FD_SET(pipe_input_to_server[0], &readfds);
         FD_SET(pipe_drone_to_server[0], &readfds);
         
-        // Only listen to generated obstacles/targets in local mode
-        if (app_mode == MODE_STANDALONE) {
+        if(app_mode == MODE_STANDALONE) {
             FD_SET(pipe_obstacle_to_server[0], &readfds);
             FD_SET(pipe_target_to_server[0], &readfds);
         }
         
-        // Listen to Network in Multiplayer
-        if (app_mode != MODE_STANDALONE && sock_fd > 0) {
-            FD_SET(sock_fd, &readfds);
+        if(app_mode != MODE_STANDALONE) {
+            FD_SET(pipe_net_to_server[0], &readfds);
         }
-
+        
         struct timeval timeout = {0, 20000};
         if (select(1024, &readfds, NULL, NULL, &timeout) < 0) {
             if (errno == EINTR) continue; 
             break;
         }
 
-        set_status("Processing I/O");
-
-        // 1. READ INPUT
         if (FD_ISSET(pipe_input_to_server[0], &readfds)) {
             int n = read(pipe_input_to_server[0], buf, sizeof(buf)-1);
-            if (n == 0) break; 
             if(n>0) {
                 buf[n]=0; char* l=strrchr(buf,'\n'); 
                 if(l){ *l=0; char* s=strrchr(buf,'\n'); s=(s)?s+1:buf; sscanf(s,"%f,%f",&force_x,&force_y); }
             }
         }
 
-        // 2. READ OBSTACLES (Local Only)
         if (app_mode == MODE_STANDALONE && FD_ISSET(pipe_obstacle_to_server[0], &readfds)) {
             int n = read(pipe_obstacle_to_server[0], buf, sizeof(buf)-1);
             if (n > 0) {
@@ -484,7 +349,6 @@ int main(void) {
             }
         }
 
-        // 3. READ TARGETS (Local Only)
         if (app_mode == MODE_STANDALONE && FD_ISSET(pipe_target_to_server[0], &readfds)) {
             int n = read(pipe_target_to_server[0], buf, sizeof(buf)-1);
             if (n > 0) {
@@ -497,49 +361,24 @@ int main(void) {
             }
         }
         
-        // 4. NETWORK I/O (Multiplayer Only)
-        if (app_mode != MODE_STANDALONE && FD_ISSET(sock_fd, &readfds)) {
-            int n = read(sock_fd, buf, sizeof(buf)-1);
-            if (n <= 0) break;
-            buf[n] = 0;
-            if (buf[0] == 'q') break; // Quit signal
-            // Protocol: "d x y" for drone position
-            if (buf[0] == 'd') {
-                int vx, vy;
-                if (sscanf(buf, "d %d %d", &vx, &vy) == 2) {
-                    from_virtual(vx, vy, &remote_drone.x, &remote_drone.y);
-                }
-            }
+        if (app_mode != MODE_STANDALONE && FD_ISSET(pipe_net_to_server[0], &readfds)) {
+            read(pipe_net_to_server[0], &remote_drone_pos, sizeof(DroneState));
         }
 
+        if (app_mode != MODE_STANDALONE) {
+            DroneState ds = {drone_x, drone_y};
+            write(pipe_server_to_net[1], &ds, sizeof(DroneState));
+        }
+        
         send_state_to_drone(force_x, force_y);
 
-        // 5. READ DRONE & UPDATE SCORE
         if (FD_ISSET(pipe_drone_to_server[0], &readfds)) {
             int n = read(pipe_drone_to_server[0], buf, sizeof(buf)-1);
             if(n>0) {
                 buf[n]=0; char* l=strrchr(buf,'\n'); 
                 if(l){ *l=0; char* s=strrchr(buf,'\n'); s=(s)?s+1:buf; sscanf(s,"%f,%f",&drone_x,&drone_y); }
-                
-                static float last_x = -1, last_y = -1;
-                if (last_x != -1) {
-                    float dist_inc = sqrt(pow(drone_x - last_x, 2) + pow(drone_y - last_y, 2));
-                    total_distance += dist_inc;
-                }
-                last_x = drone_x; last_y = drone_y;
-
-                if (app_mode == MODE_STANDALONE) check_collisions();
-                
+                check_collisions();
                 final_score = targets_collected * 1000;
-                
-                // MULTIPLAYER: Send my position to the other player
-                if (app_mode != MODE_STANDALONE) {
-                    int vx, vy;
-                    to_virtual((int)drone_x, (int)drone_y, &vx, &vy);
-                    char netmsg[64];
-                    snprintf(netmsg, sizeof(netmsg), "d %d %d", vx, vy);
-                    send_net_msg(netmsg);
-                }
             }
         }
         draw_ui(force_x, force_y);

@@ -15,94 +15,144 @@
 #include <signal.h>
 #include <time.h>
 #include <math.h>
+#include <stdarg.h>
+#include <ctype.h>
 
-// --- ADDED FOR ASSIGNMENT 3 (NETWORK) ---
+// --- NETWORK INCLUDES ---
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 
-// Network Constants (THESE WERE MISSING)
-#define NET_PORT 5555
+// --- DIMENSIONS & LIMITS ---
+#define W_WIDTH  100
+#define W_HEIGHT 30
+// Alias for legacy files
+#define DEFAULT_WIDTH  W_WIDTH
+#define DEFAULT_HEIGHT W_HEIGHT
+
+#define MAX_HAZARDS 10
+#define MAX_OBSTACLES MAX_HAZARDS
+#define MAX_TARGETS 10
+#define BUF_SIZE 512
+#define NET_BUF_SIZE 512
+
+// --- PHYSICS CONSTANTS ---
+#define PHYS_M 1.0f
+#define PHYS_K 1.0f
+#define STEP_T 0.1f
+#define DEFAULT_M PHYS_M
+#define DEFAULT_K PHYS_K
+#define DEFAULT_T STEP_T
+#define DEFAULT_ETA 1.0f
+#define DEFAULT_RHO 10.0f
+
+// --- FILE PATHS ---
+#define F_PID_REG "registry.pid"
+#define FILE_PID F_PID_REG
+
+// Log Files
+#define LOG_INPUT    "input.log"
+#define LOG_DRONE    "drone.log"
+#define LOG_GAME     "game.log"
+#define LOG_WATCHDOG "watchdog.log"
+#define LOG_NETWORK  "network.log"
+
+// --- APP MODES ---
 #define MODE_STANDALONE 0
 #define MODE_SERVER     1
 #define MODE_CLIENT     2
 
-// Dimensions
-#define DEFAULT_WIDTH  100
-#define DEFAULT_HEIGHT 30
+// --- DATA STRUCTURES ---
 
-// Physics Constants
-#define DEFAULT_M 1.0f
-#define DEFAULT_K 1.0f
-#define DEFAULT_T 0.1f
-#define DEFAULT_ETA 10.0f
-#define DEFAULT_RHO 5.0f
+// 1. Basic Point (used by Obstacles/Targets)
+typedef struct {
+    int x;
+    int y;
+} Point;
 
-// Game Rules
-#define MAX_OBSTACLES 10
-#define MAX_TARGETS 5
+// 2. Drone State (Used by Blackboard and Network)
+// CRITICAL: This must match exactly between pro_B and network.c
+typedef struct {
+    float x;
+    float y;
+} DroneState;
 
-// Log Files
-#define LOG_INPUT "input.log"
-#define LOG_DRONE "drone.log"
-#define LOG_GAME  "game_events.log"
-#define LOG_WATCHDOG "watchdog.log"   
-#define FILE_PID "pid_registry.txt"   
+// Alias 'Telemetry' to 'DroneState' so network.c works
+typedef DroneState Telemetry;
 
-#define BUF_SIZE 1024 
+// 3. Obstacle Array (Used by Network protocol)
+typedef struct {
+    int x[MAX_HAZARDS];
+    int y[MAX_HAZARDS];
+    int count;
+} Hazard;
 
-typedef struct { int x; int y; } Point;
+// --- SHARED FUNCTIONS ---
 
-// --- HELPER FUNCTIONS ---
+// 1. Logging Wrapper (Maps old 'log_message' to new logic)
+static char P_NAME[32] = "Unknown";
+static char P_STATE[64] = "BOOT"; 
 
-static inline void log_message(const char *filename, const char *msg) {
-    int fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd == -1) return;
-    if (flock(fd, LOCK_EX) == 0) {
-        time_t now = time(NULL);
-        char *t_str = ctime(&now);
-        t_str[strlen(t_str)-1] = '\0';
-        char buffer[256];
-        snprintf(buffer, sizeof(buffer), "[%s] %s\n", t_str, msg);
-        write(fd, buffer, strlen(buffer));
-        flock(fd, LOCK_UN);
+static inline void log_message(const char *file, const char *text) {
+    int f = open(file, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (f < 0) return;
+    
+    if (flock(f, LOCK_EX) == 0) {
+        time_t t = time(NULL);
+        char *ts = ctime(&t);
+        ts[strlen(ts)-1] = '\0'; 
+        
+        char line[512];
+        snprintf(line, sizeof(line), "[%s] [%s] %s\n", ts, P_NAME, text);
+        write(f, line, strlen(line));
+        flock(f, LOCK_UN);
     }
-    close(fd);
+    close(f);
 }
+// Alias for network.c
+#define log_error_custom(msg) log_message(LOG_NETWORK, msg)
 
+// 2. Process Registration
 static inline void register_process(const char *name) {
-    int fd = open(FILE_PID, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd == -1) return;
-    if (flock(fd, LOCK_EX) == 0) {
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "%s %d\n", name, getpid());
-        write(fd, buffer, strlen(buffer));
-        flock(fd, LOCK_UN);
+    strncpy(P_NAME, name, 31);
+    int f = open(F_PID_REG, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (f < 0) return;
+    
+    if (flock(f, LOCK_EX) == 0) {
+        char line[64];
+        snprintf(line, sizeof(line), "%s %d\n", name, getpid());
+        write(f, line, strlen(line));
+        flock(f, LOCK_UN);
     }
-    close(fd);
+    close(f);
+}
+#define log_process_pid(name) register_process(name)
+
+// 3. Watchdog Setup
+static void sig_watchdog_handler(int s) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "HEARTBEAT | Status: %s", P_STATE);
+    log_message(LOG_WATCHDOG, buf);
 }
 
-static char PROC_NAME[32];
-static char CURRENT_STATUS[64] = "Initializing"; 
-
-static inline void set_status(const char *status) {
-    snprintf(CURRENT_STATUS, sizeof(CURRENT_STATUS), "%s", status);
-}
-
-static void watchdog_handler(int sig) {
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%s is ALIVE | State: %s", PROC_NAME, CURRENT_STATUS);
-    log_message(LOG_WATCHDOG, msg);
-}
-
-static inline void setup_watchdog_monitor(const char *name) {
-    strncpy(PROC_NAME, name, 31);
-    struct sigaction sa;
-    sa.sa_handler = watchdog_handler;
-    sigemptyset(&sa.sa_mask);
+static inline void setup_watchdog_monitor(const char *proc_name) {
+    // register_process is usually called before this, but we ensure name is set
+    if(strlen(P_NAME) == 0 || strcmp(P_NAME, "Unknown") == 0) strncpy(P_NAME, proc_name, 31);
+    
+    struct sigaction sa = {0};
+    sa.sa_handler = sig_watchdog_handler;
     sa.sa_flags = SA_RESTART;
     sigaction(SIGUSR1, &sa, NULL);
+}
+
+static inline void set_status(const char *s) {
+    strncpy(P_STATE, s, 63);
+}
+
+// 4. Coordinate Conversion (Network Helper)
+static inline float invert_axis(float val) {
+    return (float)(W_HEIGHT - 1) - val;
 }
 
 #endif

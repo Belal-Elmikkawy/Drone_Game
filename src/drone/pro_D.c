@@ -1,16 +1,9 @@
 #include "common.h"
 
-// --- KEY VARIABLES FOR PHYSICS ---
-// M: Mass of the drone (Inertia)
-// K: Friction/Damping coefficient (Air resistance)
-// T: Time step (Duration of one simulation cycle)
+// --- PHYSICS CONSTANTS ---
 float M = DEFAULT_M;
 float K = DEFAULT_K;
 float T = DEFAULT_T; 
-
-// --- KEY VARIABLES FOR POTENTIAL FIELDS ---
-// ETA: Magnitude/Strength of the repulsive force
-// RHO: The "Danger Radius" (Distance at which repulsion activates)
 float ETA = DEFAULT_ETA;
 float RHO = DEFAULT_RHO;
 
@@ -20,9 +13,6 @@ int current_h = DEFAULT_HEIGHT;
 
 float x_curr, y_curr, x_prev, y_prev;
 
-// FUNCTION: load_params
-// LOGIC: Reads 'params.txt' at runtime.
-// REASON: Allows tuning physics (speed, friction) without recompiling.
 void load_params() {
     FILE *f = fopen("params.txt", "r");
     if (f) {
@@ -38,9 +28,6 @@ void load_params() {
     }
 }
 
-// FUNCTION: parse_world_state
-// LOGIC: Decodes the string sent by the Server (e.g., "W:100,30|F:1.0,0.0|O:...")
-// REASON: Updates the local view of window size and User Command Forces.
 void parse_world_state(char *buf, float *fx, float *fy) {
     char *w_ptr = strstr(buf, "W:");
     if(w_ptr) sscanf(w_ptr, "W:%d,%d", &current_w, &current_h);
@@ -60,36 +47,17 @@ void parse_world_state(char *buf, float *fx, float *fy) {
     }
 }
 
-// FUNCTION: calc_repulsion
-// LOGIC: Implements the Artificial Potential Field method.
-//        It calculates the distance to walls/obstacles. If dist < RHO, 
-//        it applies a repulsive force inversely proportional to distance.
 void calc_repulsion(float x, float y, float *rx, float *ry) {
     *rx = 0; *ry = 0;
     float dist;
 
-    // ---  WALL REPULSION ---
-    // The drone pushes away from the borders if it gets too close.
-    
-    // Left Wall
-    dist = (x < 0.1f) ? 0.1f : x;
-    if (dist < RHO) *rx += ETA * pow((1.0/dist - 1.0/RHO), 2);
-    
-    // Right Wall
-    dist = current_w - x; 
-    if (dist < 0.1f) dist = 0.1f;
-    if (dist < RHO) *rx -= ETA * pow((1.0/dist - 1.0/RHO), 2);
-    
-    // Top Wall
-    dist = (y < 0.1f) ? 0.1f : y;
-    if (dist < RHO) *ry += ETA * pow((1.0/dist - 1.0/RHO), 2);
-    
-    // Bottom Wall
-    dist = current_h - y; 
-    if (dist < 0.1f) dist = 0.1f;
-    if (dist < RHO) *ry -= ETA * pow((1.0/dist - 1.0/RHO), 2);
+    // Walls
+    dist = (x < 0.1f) ? 0.1f : x; if (dist < RHO) *rx += ETA * pow((1.0/dist - 1.0/RHO), 2);
+    dist = current_w - x; if (dist < 0.1f) dist = 0.1f; if (dist < RHO) *rx -= ETA * pow((1.0/dist - 1.0/RHO), 2);
+    dist = (y < 0.1f) ? 0.1f : y; if (dist < RHO) *ry += ETA * pow((1.0/dist - 1.0/RHO), 2);
+    dist = current_h - y; if (dist < 0.1f) dist = 0.1f; if (dist < RHO) *ry -= ETA * pow((1.0/dist - 1.0/RHO), 2);
 
-    // --- OBSTACLE REPULSION ---
+    // Obstacles
     for(int i=0; i<MAX_OBSTACLES; i++) {
         if(obstacles[i].x == 0) continue;
         float dx = x - obstacles[i].x;
@@ -137,15 +105,9 @@ int main(void) {
         set_status("Physics Calculation");
         calc_repulsion(x_curr, y_curr, &F_rep_x, &F_rep_y);
         
-        // --- ASSIGNMENT 1 FIX: MANUAL CONTROL ONLY ---
-        // Originally, there was an "Attraction Force" pulling the drone to targets.
-        // That was REMOVED to ensure the drone only moves when buttons are pressed (F_cmd)
-        // or when pushed by walls (F_rep).
         float F_total_x = F_cmd_x + F_rep_x;
         float F_total_y = F_cmd_y + F_rep_y;
         
-        // --- PHYSICS ENGINE (Euler Integration) ---
-        // Calculates the next position based on Force, Mass, and Friction.
         float a = M / (T * T);
         float b = K / T;
         float next_x = (F_total_x + (2 * a + b) * x_curr - a * x_prev) / (a + b);
@@ -154,7 +116,6 @@ int main(void) {
         x_prev = x_curr; y_prev = y_curr;
         x_curr = next_x; y_curr = next_y;
 
-        // Geo-fencing (Hard limits to keep drone in bounds)
         if (x_curr < 1.0f) { x_curr = 1.0f; x_prev = 1.0f; }
         if (x_curr > current_w - 1.0f) { x_curr = current_w - 1.0f; x_prev = current_w - 1.0f; }
         if (y_curr < 1.0f) { y_curr = 1.0f; y_prev = 1.0f; }

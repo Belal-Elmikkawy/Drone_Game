@@ -1,6 +1,0 @@
-Server 15202
-Watchdog 15217
-Obstacles 15218
-Targets 15219
-Input 15220
-Drone 15221
