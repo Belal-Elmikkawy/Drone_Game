@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/server.dir/src/server/pro_B.c.o -o /home/belal/Robotics/ARP/Ass1/Drone_Game-main/src/server/server  -lcurses /usr/lib/x86_64-linux-gnu/libform.so -lm 

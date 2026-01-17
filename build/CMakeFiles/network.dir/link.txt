@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/network.dir/src/network/network.c.o -o /home/belal/Robotics/ARP/Ass1/Drone_Game-main/src/network/network  -lm 
