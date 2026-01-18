@@ -13,8 +13,9 @@ EXEC_DRONE = src/drone/drone
 EXEC_OBSTACLE = src/obstacle/obstacle
 EXEC_TARGET = src/target/target
 EXEC_WATCHDOG = src/watchdog/watchdog
+EXEC_NETWORK = src/network/network
 
-TARGETS = $(EXEC_SERVER) $(EXEC_INPUT) $(EXEC_DRONE) $(EXEC_OBSTACLE) $(EXEC_TARGET) $(EXEC_WATCHDOG)
+TARGETS = $(EXEC_SERVER) $(EXEC_INPUT) $(EXEC_DRONE) $(EXEC_OBSTACLE) $(EXEC_TARGET) $(EXEC_WATCHDOG) $(EXEC_NETWORK)
 
 all: $(TARGETS)
 
@@ -37,6 +38,9 @@ $(EXEC_TARGET): src/target/pro_T.c
 
 $(EXEC_WATCHDOG): src/watchdog/pro_W.c
 	$(CC) $(CFLAGS) src/watchdog/pro_W.c -o $(EXEC_WATCHDOG) $(LIBS_WATCHDOG)
+
+$(EXEC_NETWORK): src/network/network.c
+	$(CC) $(CFLAGS) src/network/network.c -o $(EXEC_NETWORK)
 
 # --- Run ---
 run: all

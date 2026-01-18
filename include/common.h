@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
-#include <sys/file.h> 
+#include <sys/file.h>
 #include <signal.h>
 #include <time.h>
 #include <math.h>
@@ -25,8 +25,8 @@
 #include <netdb.h>
 
 // --- DIMENSIONS & LIMITS ---
-#define W_WIDTH  100
-#define W_HEIGHT 30
+#define W_WIDTH  80
+#define W_HEIGHT 24
 // Alias for legacy files
 #define DEFAULT_WIDTH  W_WIDTH
 #define DEFAULT_HEIGHT W_HEIGHT
@@ -92,17 +92,17 @@ typedef struct {
 
 // 1. Logging Wrapper (Maps old 'log_message' to new logic)
 static char P_NAME[32] = "Unknown";
-static char P_STATE[64] = "BOOT"; 
+static char P_STATE[64] = "BOOT";
 
 static inline void log_message(const char *file, const char *text) {
     int f = open(file, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (f < 0) return;
-    
+
     if (flock(f, LOCK_EX) == 0) {
         time_t t = time(NULL);
         char *ts = ctime(&t);
-        ts[strlen(ts)-1] = '\0'; 
-        
+        ts[strlen(ts)-1] = '\0';
+
         char line[512];
         snprintf(line, sizeof(line), "[%s] [%s] %s\n", ts, P_NAME, text);
         write(f, line, strlen(line));
@@ -118,7 +118,7 @@ static inline void register_process(const char *name) {
     strncpy(P_NAME, name, 31);
     int f = open(F_PID_REG, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (f < 0) return;
-    
+
     if (flock(f, LOCK_EX) == 0) {
         char line[64];
         snprintf(line, sizeof(line), "%s %d\n", name, getpid());
@@ -139,7 +139,7 @@ static void sig_watchdog_handler(int s) {
 static inline void setup_watchdog_monitor(const char *proc_name) {
     // register_process is usually called before this, but we ensure name is set
     if(strlen(P_NAME) == 0 || strcmp(P_NAME, "Unknown") == 0) strncpy(P_NAME, proc_name, 31);
-    
+
     struct sigaction sa = {0};
     sa.sa_handler = sig_watchdog_handler;
     sa.sa_flags = SA_RESTART;

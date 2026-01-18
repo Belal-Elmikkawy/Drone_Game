@@ -13,9 +13,9 @@ if [ $? -eq 0 ]; then
     echo "---------------------------------------"
     echo "Compilation successful. Starting Server..."
     echo "---------------------------------------"
-    
+
     # Run the server
-    ./server
+    ./src/server/server
 else
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     echo "Error: Compilation failed."

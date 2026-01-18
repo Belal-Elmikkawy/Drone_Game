@@ -126,4 +126,8 @@ CMakeFiles/network.dir/src/network/network.c.o: \
  /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
  /usr/include/x86_64-linux-gnu/bits/in.h /usr/include/arpa/inet.h \
  /usr/include/netdb.h /usr/include/rpc/netdb.h \
- /usr/include/x86_64-linux-gnu/bits/netdb.h
+ /usr/include/x86_64-linux-gnu/bits/netdb.h /usr/include/netinet/tcp.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h /usr/include/stdint.h \
+ /usr/include/x86_64-linux-gnu/bits/wchar.h \
+ /usr/include/x86_64-linux-gnu/bits/stdint-least.h \
+ /usr/include/x86_64-linux-gnu/sys/time.h
