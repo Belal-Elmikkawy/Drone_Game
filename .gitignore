@@ -1,15 +1,23 @@
-server
-input
-drone
-obstacle
-target
-*.o
-*.log
-server
-input
-drone
-obstacle
-target
-*.o
-# src/
+cat <<EOF > .gitignore
+# Ignore VS Code
+.vscode/
 
+# Ignore Executables
+src/server/server
+src/drone/drone
+src/input/input
+src/obstacle/obstacle
+src/target/target
+src/watchdog/watchdog
+src/network/network
+
+# Ignore Build Folder (CMake)
+build/
+*.o
+
+# Ignore Logs and IDs
+*.log
+logs/
+pid_registry.txt
+registry.pid
+EOF
