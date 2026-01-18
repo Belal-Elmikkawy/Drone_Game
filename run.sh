@@ -1,24 +1,40 @@
 #!/bin/bash
 
-# 1. Clean previous builds to avoid conflicts
-echo "Cleaning previous build..."
+# One Command to Rule Them All: Clean, Build using CMake, and Run
+
+echo "---------------------------------------"
+echo " [1/3] Configuring with CMake..."
+echo "---------------------------------------"
+
+# Ensure build directory exists
+mkdir -p build
+cd build
+
+# Generate Makefiles
+cmake ..
+
+echo "---------------------------------------"
+echo " [2/3] Building Project (Clean Rebuild)..."
+echo "---------------------------------------"
+
+# Force Clean and Build as requested
 make clean
+make
 
-# 2. Compile the project
-echo "Compiling project..."
-make all
-
-# 3. Check if compilation was successful
-if [ $? -eq 0 ]; then
-    echo "---------------------------------------"
-    echo "Compilation successful. Starting Server..."
-    echo "---------------------------------------"
-
-    # Run the server
-    ./src/server/server
-else
+# Check build status
+if [ $? -ne 0 ]; then
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     echo "Error: Compilation failed."
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     exit 1
 fi
+
+cd ..
+
+echo "---------------------------------------"
+echo " [3/3] Starting Server..."
+echo "---------------------------------------"
+
+# Run the Master Process
+# Note: CMakeLists.txt is configured to output binaries to src/*/ folders
+./src/server/server

@@ -1,3 +1,14 @@
+/*
+ * BLACKBOARD PROCESS (Server / Master)
+ * ------------------------------------
+ * This is the central hub of the Blackboard Architecture.
+ * Responsibilities:
+ * 1. Orchestration: Spawns all child processes (Input, Drone, Obstacles, Watchdog, Network).
+ * 2. IPC Routing: Routes messages between processes via pipes.
+ * 3. Rendering: Draws the UI using ncurses.
+ * 4. Game Logic: Maintains valid world state (Score, Collisions).
+ */
+
 #include "../include/common.h"
 #include <ncurses.h>
 #include <time.h>
@@ -5,18 +16,19 @@
 #include <signal.h>
 #include <math.h>
 
-// --- IPC PIPES ---
+// --- IPC PIPE FILE DESCRIPTORS ---
+// Pipes are Unidirectional. We need pairs for bidirectional communication.
 int pipe_input_to_server[2];
 int pipe_server_to_drone[2];
 int pipe_drone_to_server[2];
 int pipe_obstacle_to_server[2];
 int pipe_target_to_server[2];
 
-// Network Bridge Pipes
+// Network Bridge Pipes (Assignment 3)
 int pipe_server_to_net[2];
 int pipe_net_to_server[2];
 
-// --- PROCESS PIDs ---
+// --- CHILD PROCESS PIDS ---
 pid_t pid_input = -1, pid_drone = -1, pid_obs = -1, pid_tar = -1, pid_wd = -1, pid_net = -1;
 
 // --- WORLD STATE ---
@@ -30,19 +42,22 @@ int app_mode = MODE_STANDALONE;
 char server_ip[64] = "127.0.0.1";
 char server_port[10] = "5555";
 
-DroneState remote_drone_pos = {0,0};
+DroneState remote_drone_pos = {0,0}; // Position of player 2
 
-// --- SCORING VARIABLES ---
+// --- GAME STATS ---
 int targets_collected = 0;
 float total_distance = 0.0f;
 int final_score = 0;
 time_t start_time;
 
-int obs_idx = 0;
-int tar_idx = 0;
+int obs_idx = 0; // Ring buffer index for obstacles
+int tar_idx = 0; // Ring buffer index for targets
 
-// --- FUNCTIONS ---
+// --- HELPER FUNCTIONS ---
 
+/*
+ * Clears old log files at startup to ensure clean debugging.
+ */
 void reset_logs() {
     FILE *f;
     f = fopen(LOG_INPUT, "w"); if(f) { fprintf(f, "--- LIVE INPUT MONITOR ---\n"); fclose(f); }
@@ -53,6 +68,10 @@ void reset_logs() {
     f = fopen(FILE_PID, "w");  if(f) { fclose(f); }
 }
 
+/*
+ * Spawns a new xterm window executing 'tail -f' on a log file.
+ * This provides real-time visibility into specific subsystems.
+ */
 void spawn_monitor(const char *title, const char *logfile, int x, int y) {
     pid_t p = fork();
     if (p == 0) {
@@ -62,6 +81,9 @@ void spawn_monitor(const char *title, const char *logfile, int x, int y) {
     }
 }
 
+/*
+ * Spawns a help window showing valid keys.
+ */
 void spawn_keyboard_guide() {
     pid_t p = fork();
     if (p == 0) {
@@ -72,6 +94,10 @@ void spawn_keyboard_guide() {
     }
 }
 
+/*
+ * Checks if Drone overlaps any active Target.
+ * Updates score if collision detected.
+ */
 void check_collisions() {
     float radius = 2.0f;
     for(int i=0; i<MAX_TARGETS; i++) {
@@ -81,7 +107,7 @@ void check_collisions() {
         float dist = sqrt(dx*dx + dy*dy);
         if(dist < radius) {
             targets_collected++;
-            targets[i].x = 0; targets[i].y = 0;
+            targets[i].x = 0; targets[i].y = 0; // Despawn target
             char msg[64];
             snprintf(msg, sizeof(msg), "SCORE! Target Collected. Total: %d", targets_collected);
             log_message(LOG_GAME, msg);
@@ -94,8 +120,11 @@ void init_world() {
     memset(targets, 0, sizeof(targets));
 }
 
+/*
+ * Sends SIGKILL to all children on exit logic.
+ */
 void cleanup_processes() {
-    endwin();
+    endwin(); // detailed Ncurses shutdown
     if (pid_input > 0) kill(pid_input, SIGKILL);
     if (pid_drone > 0) kill(pid_drone, SIGKILL);
     if (pid_obs > 0)   kill(pid_obs, SIGKILL);
@@ -106,14 +135,17 @@ void cleanup_processes() {
 
 void init_ncurses_safe() {
     initscr(); cbreak(); noecho(); curs_set(0); start_color();
-    init_pair(1, COLOR_BLUE, COLOR_BLACK);
-    init_pair(2, COLOR_MAGENTA, COLOR_BLACK);
-    init_pair(3, COLOR_GREEN, COLOR_BLACK);
-    init_pair(4, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(1, COLOR_BLUE, COLOR_BLACK);    // Drone
+    init_pair(2, COLOR_MAGENTA, COLOR_BLACK); // Border/UI
+    init_pair(3, COLOR_GREEN, COLOR_BLACK);   // Obstacles
+    init_pair(4, COLOR_YELLOW, COLOR_BLACK);  // Targets
 }
 
+/*
+ * Prompts user for Game Mode (Server/Client/Local) at startup.
+ */
 void get_user_mode() {
-    endwin();
+    endwin(); // Temporarily exit ncurses if active (not yet)
     printf("1. Server\n2. Client\n3. Local\nSelect: ");
     int c;
     if(scanf("%d", &c) != 1) c = 3;
@@ -139,8 +171,14 @@ void get_user_mode() {
     }
 }
 
+/*
+ * MAIN RENDER FUNCTION
+ * Draws the border, stats, entities, and local/remote drones.
+ */
 void draw_ui(float fx, float fy) {
     erase();
+
+    // Draw Border & Header
     attron(COLOR_PAIR(2));
     box(stdscr, 0, 0);
     mvprintw(0, 2, " Mode: %s | Port: %s ",
@@ -148,78 +186,91 @@ void draw_ui(float fx, float fy) {
              (app_mode==MODE_STANDALONE)?"N/A":server_port);
     attroff(COLOR_PAIR(2));
 
+    // Draw Obstacles
     attron(COLOR_PAIR(3));
     for (int i = 0; i < MAX_OBSTACLES; ++i)
         if(obstacles[i].x>0) mvaddch(obstacles[i].y, obstacles[i].x, 'O');
     attroff(COLOR_PAIR(3));
 
+    // Draw Remote Drone (Player 2)
     if(app_mode != MODE_STANDALONE && remote_drone_pos.x != 0) {
         attron(COLOR_PAIR(3));
         mvaddch((int)remote_drone_pos.y, (int)remote_drone_pos.x, 'X');
         attroff(COLOR_PAIR(3));
     }
 
+    // Draw Targets
     attron(COLOR_PAIR(4));
     for (int i = 0; i < MAX_TARGETS; ++i) {
         if(targets[i].x > 0) mvaddch(targets[i].y, targets[i].x, '1' + i);
     }
     attroff(COLOR_PAIR(4));
 
+    // Draw Local Drone (Player 1)
     attron(COLOR_PAIR(1));
     int dx = (int)drone_x; int dy = (int)drone_y;
+    // Boundary Clamps
     if (dx < 1) dx = 1; if (dx >= screen_w-1) dx = screen_w-2;
     if (dy < 1) dy = 1; if (dy >= screen_h-1) dy = screen_h-2;
     mvaddch(dy, dx, '+');
     attroff(COLOR_PAIR(1));
+
     refresh();
 }
 
+/*
+ * Constructs the Environment String to send to the Physics Engine.
+ * Format: "W:w,h|F:fx,fy|O:ox,oy;ox,oy...|T:tx,ty..."
+ * Also appends Remote Drone as an Obstacle so standard physics avoids it.
+ */
 void send_state_to_drone(float fx, float fy) {
     char msg[BUF_SIZE];
     int offset = sprintf(msg, "W:%d,%d|F:%.2f,%.2f|O:", screen_w, screen_h, fx, fy);
 
+    // Append standard obstacles
     for(int i=0; i<MAX_OBSTACLES; i++)
         if(obstacles[i].x != 0) offset += sprintf(msg + offset, "%d,%d;", obstacles[i].x, obstacles[i].y);
 
+    // Append Remote Drone as Obstacle (Behavior Injection)
     if(app_mode != MODE_STANDALONE && remote_drone_pos.x != 0) {
         offset += sprintf(msg + offset, "%d,%d;", (int)remote_drone_pos.x, (int)remote_drone_pos.y);
     }
 
-    msg[offset-1] = '|';
+    msg[offset-1] = '|'; // Replace last semicolon or colon
+    if (msg[offset-1] == ':') offset++; // Restore if it was empty
+
     offset += sprintf(msg + offset, "T:");
     for(int i=0; i<MAX_TARGETS; i++)
         if(targets[i].x != 0) offset += sprintf(msg + offset, "%d,%d;", targets[i].x, targets[i].y);
 
     strcat(msg, "\n");
-    dprintf(pipe_server_to_drone[1], "%s", msg);
+    dprintf(pipe_server_to_drone[1], "%s", msg); // Send to Physics Pipe
 }
 
-// --- MAIN ---
+// --- MAIN EXECUTION ---
 int main(void) {
     srand(time(NULL));
     reset_logs();
 
-    // 1. Register PID immediately
+    // 1. Identification
     register_process("Server");
 
-    // 2. ASK USER FOR MODE *BEFORE* SETTING UP WATCHDOG
+    // 2. Select Mode
     get_user_mode();
 
-    // 3. NOW check if we need the watchdog handler
-    // If we are Server or Client, the Watchdog will be spawned later,
-    // so we MUST register the signal handler now to prevent being killed.
+    // 3. Register with Watchdog (Before loop starts)
     if(app_mode != MODE_STANDALONE) {
         setup_watchdog_monitor("Server");
     }
 
-    // Create Pipes
+    // 4. Create Pipes (Standard)
     if (pipe(pipe_input_to_server) == -1)    { perror("Pipe Input"); exit(1); }
     if (pipe(pipe_server_to_drone) == -1)    { perror("Pipe S->D"); exit(1); }
     if (pipe(pipe_drone_to_server) == -1)    { perror("Pipe D->S"); exit(1); }
     if (pipe(pipe_obstacle_to_server) == -1) { perror("Pipe Obst"); exit(1); }
     if (pipe(pipe_target_to_server) == -1)   { perror("Pipe Targ"); exit(1); }
 
-    // Network Pipes
+    // 5. Create Network Pipes
     if(app_mode != MODE_STANDALONE) {
         if(pipe(pipe_server_to_net) == -1) { perror("Pipe NetTx"); exit(1); }
         if(pipe(pipe_net_to_server) == -1) { perror("Pipe NetRx"); exit(1); }
@@ -229,6 +280,7 @@ int main(void) {
 
     spawn_keyboard_guide();
 
+    // Open extra log monitors in Multiplayer mode
     if (app_mode != MODE_STANDALONE) {
         spawn_monitor("PHYSICS", LOG_DRONE, 400, 0);
         spawn_monitor("NETWORK TRAFFIC", LOG_NETWORK, 800, 0);
@@ -236,7 +288,9 @@ int main(void) {
 
     init_world();
 
-    // Spawn Watchdog (ONLY in Server/Client mode)
+    // --- SPAWNING CHILD PROCESSES ---
+
+    // A) Watchdog (Only in Multiplayer for some reason, usually always good but assignment specific)
     if (app_mode != MODE_STANDALONE) {
         if ((pid_wd = fork()) == 0) {
             execlp("xterm", "xterm", "-T", "Watchdog", "-e", "./src/watchdog/watchdog", NULL);
@@ -244,10 +298,10 @@ int main(void) {
         }
     }
 
-    // Spawn Obstacles (Only in Standalone)
+    // B) Generators (Only in Local Mode - Multiplayer has no random obstacles)
     if (app_mode == MODE_STANDALONE) {
         if ((pid_obs = fork()) == 0) {
-            dup2(pipe_obstacle_to_server[1], STDOUT_FILENO);
+            dup2(pipe_obstacle_to_server[1], STDOUT_FILENO); // Pipe Stdout -> Server
             close(pipe_obstacle_to_server[0]); close(pipe_obstacle_to_server[1]);
             execl("src/obstacle/obstacle", "obstacle", NULL); _exit(1);
         }
@@ -258,7 +312,7 @@ int main(void) {
         }
     }
 
-    // Spawn Network Bridge
+    // C) Network Bridge (The TCP Handler)
     if (app_mode != MODE_STANDALONE) {
         if ((pid_net = fork()) == 0) {
             char mode_str[10], fd_rx[10], fd_tx[10];
@@ -268,7 +322,7 @@ int main(void) {
 
             close(pipe_server_to_net[1]); close(pipe_net_to_server[0]);
 
-            // Redirect stderr to avoid UI corruption
+            // SILENCE STDERR of Network Process to prevent UI Corruption
             int null_fd = open("/dev/null", O_WRONLY);
             dup2(null_fd, STDERR_FILENO);
             close(null_fd);
@@ -278,29 +332,31 @@ int main(void) {
         }
         close(pipe_server_to_net[0]); close(pipe_net_to_server[1]);
         fcntl(pipe_net_to_server[0], F_SETFL, O_NONBLOCK);
-        fcntl(pipe_server_to_net[1], F_SETFL, O_NONBLOCK); // Prevent Game Freeze if Network Stalls
+        fcntl(pipe_server_to_net[1], F_SETFL, O_NONBLOCK);
     }
 
-    // Spawn Input
+    // D) Input Process
     if ((pid_input = fork()) == 0) {
         dup2(pipe_input_to_server[1], STDOUT_FILENO);
         close(pipe_input_to_server[0]); close(pipe_input_to_server[1]);
         execl("src/input/input", "input", NULL); _exit(1);
     }
 
-    // Spawn Drone
+    // E) Drone Physics Process
     if ((pid_drone = fork()) == 0) {
-        dup2(pipe_server_to_drone[0], STDIN_FILENO);
-        dup2(pipe_drone_to_server[1], STDOUT_FILENO);
+        dup2(pipe_server_to_drone[0], STDIN_FILENO); // Reads Env from Server
+        dup2(pipe_drone_to_server[1], STDOUT_FILENO); // Writes State to Server
         close(pipe_server_to_drone[0]); close(pipe_server_to_drone[1]);
         close(pipe_drone_to_server[0]); close(pipe_drone_to_server[1]);
         execl("src/drone/drone", "drone", NULL); _exit(1);
     }
 
+    // Close unused ends in Parent
     close(pipe_input_to_server[1]); close(pipe_server_to_drone[0]);
     close(pipe_drone_to_server[1]); close(pipe_obstacle_to_server[1]);
     close(pipe_target_to_server[1]);
 
+    // Set Read ends to Non-Blocking
     fcntl(pipe_input_to_server[0], F_SETFL, O_NONBLOCK);
     fcntl(pipe_drone_to_server[0], F_SETFL, O_NONBLOCK);
     fcntl(pipe_obstacle_to_server[0], F_SETFL, O_NONBLOCK);
@@ -313,10 +369,12 @@ int main(void) {
     char buf[BUF_SIZE];
     fd_set readfds;
 
-    // --- MAIN LOOP ---
+    // --- MAIN EVENT LOOP ---
     while (1) {
-        getmaxyx(stdscr, screen_h, screen_w);
+        getmaxyx(stdscr, screen_h, screen_w); // Handle Resize
         FD_ZERO(&readfds);
+
+        // Add Pipes to Set
         FD_SET(pipe_input_to_server[0], &readfds);
         FD_SET(pipe_drone_to_server[0], &readfds);
 
@@ -329,12 +387,14 @@ int main(void) {
             FD_SET(pipe_net_to_server[0], &readfds);
         }
 
+        // Wait for Activity (20ms Timeout = ~50 FPS)
         struct timeval timeout = {0, 20000};
         if (select(1024, &readfds, NULL, NULL, &timeout) < 0) {
             if (errno == EINTR) continue;
             break;
         }
 
+        // 1. Process Input
         if (FD_ISSET(pipe_input_to_server[0], &readfds)) {
             int n = read(pipe_input_to_server[0], buf, sizeof(buf)-1);
             if(n>0) {
@@ -343,18 +403,21 @@ int main(void) {
             }
         }
 
+        // 2. Process Obstacles
         if (app_mode == MODE_STANDALONE && FD_ISSET(pipe_obstacle_to_server[0], &readfds)) {
             int n = read(pipe_obstacle_to_server[0], buf, sizeof(buf)-1);
             if (n > 0) {
+                 // Fast parsing of multiple coordinate pairs
                 buf[n] = 0; char *ptr = buf; int ox, oy, offset;
                 while(sscanf(ptr, "%d,%d%n", &ox, &oy, &offset) == 2) {
                     obstacles[obs_idx].x = ox; obstacles[obs_idx].y = oy;
-                    obs_idx = (obs_idx + 1) % MAX_OBSTACLES;
+                    obs_idx = (obs_idx + 1) % MAX_OBSTACLES; // Ring buffer
                     ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++;
                 }
             }
         }
 
+        // 3. Process Targets
         if (app_mode == MODE_STANDALONE && FD_ISSET(pipe_target_to_server[0], &readfds)) {
             int n = read(pipe_target_to_server[0], buf, sizeof(buf)-1);
             if (n > 0) {
@@ -367,17 +430,21 @@ int main(void) {
             }
         }
 
+        // 4. Process Network (Remote Drone)
         if (app_mode != MODE_STANDALONE && FD_ISSET(pipe_net_to_server[0], &readfds)) {
             read(pipe_net_to_server[0], &remote_drone_pos, sizeof(DroneState));
         }
 
+        // 5. Send Local Position to Network
         if (app_mode != MODE_STANDALONE) {
             DroneState ds = {drone_x, drone_y};
             write(pipe_server_to_net[1], &ds, sizeof(DroneState));
         }
 
+        // 6. Update Physics Engine
         send_state_to_drone(force_x, force_y);
 
+        // 7. Get New Physics State
         if (FD_ISSET(pipe_drone_to_server[0], &readfds)) {
             int n = read(pipe_drone_to_server[0], buf, sizeof(buf)-1);
             if(n>0) {
@@ -387,8 +454,12 @@ int main(void) {
                 final_score = targets_collected * 1000;
             }
         }
+
+        // 8. Render
         draw_ui(force_x, force_y);
     }
+
+    // Exit Logic
     cleanup_processes();
     return 0;
 }

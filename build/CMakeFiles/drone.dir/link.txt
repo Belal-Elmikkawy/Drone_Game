@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/drone.dir/src/drone/pro_D.c.o -o /home/belal/Robotics/ARP/Ass1/Drone_Game-main/src/drone/drone  -lm 

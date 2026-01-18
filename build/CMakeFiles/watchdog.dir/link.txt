@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/watchdog.dir/src/watchdog/pro_W.c.o -o /home/belal/Robotics/ARP/Ass1/Drone_Game-main/src/watchdog/watchdog  -lcurses /usr/lib/x86_64-linux-gnu/libform.so 

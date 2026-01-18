@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/target.dir/src/target/pro_T.c.o -o /home/belal/Robotics/ARP/Ass1/Drone_Game-main/src/target/target 

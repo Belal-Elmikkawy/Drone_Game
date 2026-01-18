@@ -1,23 +1,30 @@
-cat <<EOF > .gitignore
-# Ignore VS Code
+# ===== VS Code =====
 .vscode/
+*.code-workspace
 
-# Ignore Executables
-src/server/server
-src/drone/drone
-src/input/input
-src/obstacle/obstacle
-src/target/target
-src/watchdog/watchdog
-src/network/network
-
-# Ignore Build Folder (CMake)
+# ===== Build directories =====
 build/
-*.o
+bin/
+obj/
 
-# Ignore Logs and IDs
+# ===== Compiled objects & binaries =====
+*.o
+*.o.d
+*.out
+a.out
+
+# ===== Executables =====
+drone
+input
+network
+obstacle
+server
+target
+watchdog
+
+# ===== Logs & runtime files =====
 *.log
+*.pid
 logs/
-pid_registry.txt
 registry.pid
-EOF
+
