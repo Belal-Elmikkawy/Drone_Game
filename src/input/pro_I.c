@@ -1,94 +1,133 @@
 /*
  * INPUT PROCESS (pro_I)
  * ---------------------
- * Handles User Interface Input (Keyboard).
- * 1. Puts terminal into 'Raw Mode' to capture keypresses instantly without Enter.
- * 2. Maps keys (WASD, IJKL, etc.) to Force Vectors.
- * 3. Sends calculated Force to the Server via Pipe.
+ * Captures user keyboard input and converts it into control forces.
+ *
+ * Mechanism:
+ * 1. Sets terminal to RAW MODE (disables buffering/echo).
+ * 2. Reads key presses (WASD / Arrows).
+ * 3. Maps keys to Forces (Newtonian logic).
+ * 4. Sends Force Vector (Fx, Fy) to Server.
  */
 
 #include "common.h"
 #include <termios.h>
 
+// --- INPUT SETTINGS ---
+#define INPUT_STEP 1.0f  // Force increment per keypress
+#define DECAY_RATE 0.9f  // Force decay when no key is pressed (simulates spring return)
+
 /*
- * Configures the terminal to standard "Raw" mode.
- * Disables canonical line buffering and echo.
+ * set_conio_terminal_mode
+ * -----------------------
+ * Configures the terminal for real-time game input.
+ * - Disables Canonical Mode: Input is available immediately, not after 'Enter'.
+ * - Disables Echo: Typed keys are not shown on screen.
+ *
+ * This allows 'getch()' style immediate reading which is essential for smooth controls.
  */
-void set_raw_mode(int enable) {
-    static struct termios oldt, newt;
-    if (enable) {
-        tcgetattr(STDIN_FILENO, &oldt);
-        newt = oldt;
-        newt.c_lflag &= ~(ICANON | ECHO); // Disable buffer & echo
-        newt.c_cc[VMIN] = 1; // Read at least 1 char
-        newt.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    } else {
-        tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore settings
-    }
+void set_conio_terminal_mode() {
+    struct termios new_termios;
+    tcgetattr(0, &new_termios);
+    new_termios.c_lflag &= ~ICANON; // Disable line buffering
+    new_termios.c_lflag &= ~ECHO;   // Disable echo
+    tcsetattr(0, TCSANOW, &new_termios);
 }
 
-int main() {
+/*
+ * kbhit
+ * -----
+ * Checks if a keyboard key has been pressed.
+ * Returns: 1 if key waiting, 0 otherwise.
+ * Logic: Uses select() on stdin (fd 0) with 0 timeout.
+ */
+int kbhit() {
+    struct timeval tv = { 0L, 0L };
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(0, &fds);
+    return select(1, &fds, NULL, NULL, &tv);
+}
+
+/*
+ * getch
+ * -----
+ * Reads a single character from stdin.
+ */
+int getch() {
+    int r;
+    unsigned char c;
+    if ((r = read(0, &c, sizeof(c))) < 0) return r;
+    else return c;
+}
+
+int main(void) {
+    // 1. Startup
     register_process("Input");
     setup_watchdog_monitor("Input");
 
-    set_raw_mode(1); // Enable Raw Mode
+    set_conio_terminal_mode();
 
     float Fx = 0.0f;
     float Fy = 0.0f;
-    char c;
+    int key = 0;
 
-    tcflush(STDIN_FILENO, TCIFLUSH);
-    printf("0.0,0.0\n"); fflush(stdout); // Initial zero force
+    // Polling Interval
+    struct timespec ts = {0, 50000000}; // 50ms
 
     while (1) {
-        set_status("Waiting Keypress");
+        set_status("Polling Input");
 
-        // Blocking Read (Raw mode returns immediately on keypress)
-        if (read(STDIN_FILENO, &c, 1) > 0) {
-            set_status("Processing Key");
-            switch(c) {
-                // --- ARROW-STYLE CONTROLS ---
-                // UP
-                case 'e': case 'i':
-                    Fy -= 1.0f; Fx = 0.0f; break;
-                // DOWN
-                case 'c': case ',':
-                    Fy += 1.0f; Fx = 0.0f; break;
-                // LEFT
-                case 's': case 'j':
-                    Fx -= 1.0f; Fy = 0.0f; break;
-                // RIGHT
-                case 'f': case 'l':
-                    Fx += 1.0f; Fy = 0.0f; break;
+        // 2. Read Keys
+        if (kbhit()) {
+            key = getch();
 
-                // --- DIAGONALS ---
-                case 'w': Fx -= 1.0f; Fy -= 1.0f; break; // Up-Left
-                case 'r': Fx += 1.0f; Fy -= 1.0f; break; // Up-Right
-                case 'v': Fx += 1.0f; Fy += 1.0f; break; // Down-Right
-                case 'x': Fx -= 1.0f; Fy += 1.0f; break; // Down-Left
-
-                // --- UTILITY ---
-                case 'd': case 'k': case ' ':
-                    Fx = 0.0f; Fy = 0.0f; break; // BRAKE (Stop)
-
-                case 'q':
-                    set_raw_mode(0); exit(0); // QUIT
+            // Handle Arrow Keys (Sequence: ESC -> [ -> A/B/C/D)
+            if (key == 27) {
+                getch(); // Skip '['
+                key = getch();
+                switch(key) {
+                    case 'A': key = 'e'; break; // Up
+                    case 'B': key = 'x'; break; // Down
+                    case 'C': key = 'f'; break; // Right
+                    case 'D': key = 's'; break; // Left
+                }
             }
 
-            // Limit Maximum Force
-            if (Fx > 10.0f) Fx = 10.0f; if (Fx < -10.0f) Fx = -10.0f;
-            if (Fy > 10.0f) Fy = 10.0f; if (Fy < -10.0f) Fy = -10.0f;
-
-            // Send to Server
-            printf("%.2f,%.2f\n", Fx, Fy);
-            fflush(stdout);
-
-            char msg[64];
-            snprintf(msg, sizeof(msg), "Key: %c Force: (%.1f, %.1f)", c, Fx, Fy);
-            log_message(LOG_INPUT, msg);
+            // Map Keys to Forces
+            // E/I/8 = Up | X/M/2 = Down | S/J/4 = Left | F/L/6 = Right
+            key = tolower(key);
+            if (key == 'e' || key == 'i' || key == '8') Fy -= INPUT_STEP;
+            else if (key == 'x' || key == 'm' || key == '2') Fy += INPUT_STEP;
+            else if (key == 's' || key == 'j' || key == '4') Fx -= INPUT_STEP;
+            else if (key == 'f' || key == 'l' || key == '6') Fx += INPUT_STEP;
+            else if (key == 'r') { Fy = 0; Fx = 0; } // Brake/Reset
+            else if (key == ' ') { Fy = 0; Fx = 0; } // Space Brake
+            else if (key == 'q') { break; } // Quit
+        } else {
+            // Decay forces slightly if no input (Damping)
+            // Fx *= DECAY_RATE;
+            // Fy *= DECAY_RATE;
+            // (Commented out to allow "Cruise Control" feel, uncomment for specific control style)
         }
+
+        // 3. Clamp Forces
+        if (Fx > 10.0f) Fx = 10.0f;
+        if (Fx < -10.0f) Fx = -10.0f;
+        if (Fy > 10.0f) Fy = 10.0f;
+        if (Fy < -10.0f) Fy = -10.0f;
+
+        // 4. Send to Server (via Pipe)
+        printf("%.2f,%.2f\n", Fx, Fy);
+        fflush(stdout);
+
+        // Debug Log
+        char log_msg[64];
+        snprintf(log_msg, sizeof(log_msg), "Key: %c | Force: (%.1f, %.1f)", key, Fx, Fy);
+        log_message(LOG_INPUT, log_msg);
+
+        nanosleep(&ts, NULL);
     }
-    set_raw_mode(0);
+
     return 0;
 }

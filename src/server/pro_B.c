@@ -18,23 +18,24 @@
 
 // --- IPC PIPE FILE DESCRIPTORS ---
 // Pipes are Unidirectional. We need pairs for bidirectional communication.
-int pipe_input_to_server[2];
-int pipe_server_to_drone[2];
-int pipe_drone_to_server[2];
-int pipe_obstacle_to_server[2];
-int pipe_target_to_server[2];
+int pipe_input_to_server[2];    // Input Process -> Server
+int pipe_server_to_drone[2];    // Server -> Drone Process (Env Data)
+int pipe_drone_to_server[2];    // Drone Process -> Server (Position)
+int pipe_obstacle_to_server[2]; // Obstacle Gen -> Server
+int pipe_target_to_server[2];   // Target Gen -> Server
 
 // Network Bridge Pipes (Assignment 3)
-int pipe_server_to_net[2];
-int pipe_net_to_server[2];
+int pipe_server_to_net[2];      // Server -> Network (Tx)
+int pipe_net_to_server[2];      // Network -> Server (Rx)
 
 // --- CHILD PROCESS PIDS ---
+// Used to manage lifecycle (spawn/kill) of children
 pid_t pid_input = -1, pid_drone = -1, pid_obs = -1, pid_tar = -1, pid_wd = -1, pid_net = -1;
 
 // --- WORLD STATE ---
 Point obstacles[MAX_OBSTACLES];
 Point targets[MAX_TARGETS];
-float drone_x, drone_y;
+float drone_x, drone_y;        // Local Drone Position
 int screen_w = DEFAULT_WIDTH;
 int screen_h = DEFAULT_HEIGHT;
 
@@ -42,11 +43,11 @@ int app_mode = MODE_STANDALONE;
 char server_ip[64] = "127.0.0.1";
 char server_port[10] = "5555";
 
-DroneState remote_drone_pos = {0,0}; // Position of player 2
+DroneState remote_drone_pos = {0,0}; // Position of player 2 (Network)
 
 // --- GAME STATS ---
 int targets_collected = 0;
-float total_distance = 0.0f;
+float total_distance = 0.0f; // Unused but reserved for future
 int final_score = 0;
 time_t start_time;
 
@@ -56,7 +57,17 @@ int tar_idx = 0; // Ring buffer index for targets
 // --- HELPER FUNCTIONS ---
 
 /*
+ * reset_logs
+ * ----------
  * Clears old log files at startup to ensure clean debugging.
+ */
+/*
+ * reset_logs
+ * ----------
+ * Clears old log files at startup to ensure clean debugging.
+ * This function is critical for Assignment 2 logging requirements.
+ * It opens each declared log file in 'write' mode (clearing context)
+ * and writes a header line.
  */
 void reset_logs() {
     FILE *f;
@@ -69,6 +80,8 @@ void reset_logs() {
 }
 
 /*
+ * spawn_monitor
+ * -------------
  * Spawns a new xterm window executing 'tail -f' on a log file.
  * This provides real-time visibility into specific subsystems.
  */
@@ -82,6 +95,8 @@ void spawn_monitor(const char *title, const char *logfile, int x, int y) {
 }
 
 /*
+ * spawn_keyboard_guide
+ * --------------------
  * Spawns a help window showing valid keys.
  */
 void spawn_keyboard_guide() {
@@ -95,13 +110,20 @@ void spawn_keyboard_guide() {
 }
 
 /*
+ * check_collisions
+ * ----------------
  * Checks if Drone overlaps any active Target.
  * Updates score if collision detected.
+ *
+ * Algorithm description:
+ * - Iterates through all targets.
+ * - Calculates Euclidean distance.
+ * - If distance < 2.0 (Collision Radius), collects target.
  */
 void check_collisions() {
     float radius = 2.0f;
     for(int i=0; i<MAX_TARGETS; i++) {
-        if(targets[i].x == 0) continue;
+        if(targets[i].x == 0) continue; // Skip inactive targets
         float dx = drone_x - targets[i].x;
         float dy = drone_y - targets[i].y;
         float dist = sqrt(dx*dx + dy*dy);
@@ -115,13 +137,21 @@ void check_collisions() {
     }
 }
 
+/*
+ * init_world
+ * ----------
+ * Resets the game state (clears obstacles and targets).
+ */
 void init_world() {
     memset(obstacles, 0, sizeof(obstacles));
     memset(targets, 0, sizeof(targets));
 }
 
 /*
+ * cleanup_processes
+ * -----------------
  * Sends SIGKILL to all children on exit logic.
+ * Ensures no orphan processes are left running.
  */
 void cleanup_processes() {
     endwin(); // detailed Ncurses shutdown
@@ -133,6 +163,11 @@ void cleanup_processes() {
     if (pid_net > 0)   kill(pid_net, SIGKILL);
 }
 
+/*
+ * init_ncurses_safe
+ * -----------------
+ * Initializes the ncurses library for text-based UI.
+ */
 void init_ncurses_safe() {
     initscr(); cbreak(); noecho(); curs_set(0); start_color();
     init_pair(1, COLOR_BLUE, COLOR_BLACK);    // Drone
@@ -142,7 +177,10 @@ void init_ncurses_safe() {
 }
 
 /*
+ * get_user_mode
+ * -------------
  * Prompts user for Game Mode (Server/Client/Local) at startup.
+ * Inputs are read from stdin before ncurses takes over.
  */
 void get_user_mode() {
     endwin(); // Temporarily exit ncurses if active (not yet)
@@ -172,8 +210,12 @@ void get_user_mode() {
 }
 
 /*
+ * draw_ui
+ * -------
  * MAIN RENDER FUNCTION
  * Draws the border, stats, entities, and local/remote drones.
+ *
+ * input: fx, fy (Current input forces to display for debugging)
  */
 void draw_ui(float fx, float fy) {
     erase();
@@ -195,6 +237,7 @@ void draw_ui(float fx, float fy) {
     // Draw Remote Drone (Player 2)
     if(app_mode != MODE_STANDALONE && remote_drone_pos.x != 0) {
         attron(COLOR_PAIR(3));
+        // Note: remote_drone_pos.y is already corrected/inverted in main loop
         mvaddch((int)remote_drone_pos.y, (int)remote_drone_pos.x, 'X');
         attroff(COLOR_PAIR(3));
     }
@@ -209,9 +252,11 @@ void draw_ui(float fx, float fy) {
     // Draw Local Drone (Player 1)
     attron(COLOR_PAIR(1));
     int dx = (int)drone_x; int dy = (int)drone_y;
-    // Boundary Clamps
-    if (dx < 1) dx = 1; if (dx >= screen_w-1) dx = screen_w-2;
-    if (dy < 1) dy = 1; if (dy >= screen_h-1) dy = screen_h-2;
+    // Boundary Clamps (Prevent drawing outside window)
+    if (dx < 1) dx = 1;
+    if (dx >= screen_w-1) dx = screen_w-2;
+    if (dy < 1) dy = 1;
+    if (dy >= screen_h-1) dy = screen_h-2;
     mvaddch(dy, dx, '+');
     attroff(COLOR_PAIR(1));
 
@@ -219,9 +264,14 @@ void draw_ui(float fx, float fy) {
 }
 
 /*
+ * send_state_to_drone
+ * -------------------
  * Constructs the Environment String to send to the Physics Engine.
  * Format: "W:w,h|F:fx,fy|O:ox,oy;ox,oy...|T:tx,ty..."
- * Also appends Remote Drone as an Obstacle so standard physics avoids it.
+ *
+ * Key Logic:
+ * - Also appends Remote Drone as an Obstacle ('O') so the local Physics Engine
+ *   automatically avoids it using the same repulsion logic.
  */
 void send_state_to_drone(float fx, float fy) {
     char msg[BUF_SIZE];
@@ -290,7 +340,7 @@ int main(void) {
 
     // --- SPAWNING CHILD PROCESSES ---
 
-    // A) Watchdog (Only in Multiplayer for some reason, usually always good but assignment specific)
+    // A) Watchdog (Only in Multiplayer)
     if (app_mode != MODE_STANDALONE) {
         if ((pid_wd = fork()) == 0) {
             execlp("xterm", "xterm", "-T", "Watchdog", "-e", "./src/watchdog/watchdog", NULL);
@@ -403,15 +453,35 @@ int main(void) {
             }
         }
 
-        // 2. Process Obstacles
+        // 3. Process Obstacles (Assignment 2 Despawn Logic)
         if (app_mode == MODE_STANDALONE && FD_ISSET(pipe_obstacle_to_server[0], &readfds)) {
             int n = read(pipe_obstacle_to_server[0], buf, sizeof(buf)-1);
             if (n > 0) {
                  // Fast parsing of multiple coordinate pairs
                 buf[n] = 0; char *ptr = buf; int ox, oy, offset;
                 while(sscanf(ptr, "%d,%d%n", &ox, &oy, &offset) == 2) {
-                    obstacles[obs_idx].x = ox; obstacles[obs_idx].y = oy;
-                    obs_idx = (obs_idx + 1) % MAX_OBSTACLES; // Ring buffer
+
+                    if (ox == 0 && oy == 0) {
+                        // --- DESPAWN EVENT (Assignment 2) ---
+                        // The Generator requested a despawn (0,0).
+                        // We find a random active obstacle and remove it.
+                        // We check up to MAX_OBSTACLES times to find a non-zero one.
+                        int attempts = MAX_OBSTACLES;
+                        int r_idx = rand() % MAX_OBSTACLES;
+                        while (attempts-- > 0) {
+                             if (obstacles[r_idx].x != 0) {
+                                 obstacles[r_idx].x = 0; obstacles[r_idx].y = 0; // Clear it
+                                 break;
+                             }
+                             r_idx = (r_idx + 1) % MAX_OBSTACLES;
+                        }
+                    } else {
+                        // --- SPAWN EVENT ---
+                        // Standard spawn logic using Ring Buffer
+                        obstacles[obs_idx].x = ox; obstacles[obs_idx].y = oy;
+                        obs_idx = (obs_idx + 1) % MAX_OBSTACLES; // Ring buffer
+                    }
+
                     ptr += offset; while(*ptr == '\n' || *ptr == ' ' || *ptr == '\r') ptr++;
                 }
             }
@@ -433,6 +503,11 @@ int main(void) {
         // 4. Process Network (Remote Drone)
         if (app_mode != MODE_STANDALONE && FD_ISSET(pipe_net_to_server[0], &readfds)) {
             read(pipe_net_to_server[0], &remote_drone_pos, sizeof(DroneState));
+            // Fix inverted movement locally (User Request)
+            // Flip the Y-coordinate coming from the network to match local screen space
+            if(remote_drone_pos.x != 0) {
+                remote_drone_pos.y = (float)(screen_h - 1) - remote_drone_pos.y;
+            }
         }
 
         // 5. Send Local Position to Network

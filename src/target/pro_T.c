@@ -1,33 +1,33 @@
 /*
  * TARGET GENERATOR PROCESS (pro_T)
  * --------------------------------
- * Periodically generates spawn coordinates for score targets.
- * Logic is simple: Just spawns new targets at random intervals.
+ * Periodically generates score targets.
+ * - Similar logic to Obstacle Generator.
+ * - Sends "x,y" coordinates to Server.
  */
 
 #include "common.h"
 
-int main(int argc, char *argv[]) {
+int main(void) {
+    // 1. Startup
     register_process("Targets");
-    setup_watchdog_monitor("Targets");
+    srand(time(NULL) + 999); // Unique seed
 
-    srand(time(NULL) ^ getpid() ^ 999);
-    int max_w = DEFAULT_WIDTH;
-    int max_h = DEFAULT_HEIGHT;
-
-    // Initial Burst
-    for(int i=0; i<3; i++) {
-        printf("%d,%d\n", rand()%(max_w-2)+1, rand()%(max_h-2)+1);
-        fflush(stdout);
-    }
+    int x, y;
+    struct timespec ts = {4, 0}; // Every 4 Seconds
 
     while(1) {
-        set_status("Sleeping");
-        sleep((rand()%4)+4); // Slower interval (4-7 seconds)
+        // 2. Generate Random Coordinates
+        // Keep away from borders (1..W-2) to avoid spawning inside the wall.
+        // The '+1' offset ensures we are at least at index 1.
+        x = (rand() % (DEFAULT_WIDTH - 2)) + 1;
+        y = (rand() % (DEFAULT_HEIGHT - 2)) + 1;
 
-        set_status("Generating Target");
-        printf("%d,%d\n", rand()%(max_w-2)+1, rand()%(max_h-2)+1);
+        // 3. Send to Server
+        printf("%d,%d", x, y);
         fflush(stdout);
+
+        nanosleep(&ts, NULL);
     }
     return 0;
 }

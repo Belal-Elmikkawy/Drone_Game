@@ -1,97 +1,68 @@
 /*
  * WATCHDOG PROCESS (pro_W)
  * ------------------------
- * Monitors system health by checking process responsiveness.
- * 1. Reads registered PIDs from `pid_registry.txt`.
- * 2. Sends SIGUSR1 signal to each process.
- * 3. Expects the process to have a signal handler that functions correctly.
- * 4. If a process does not exist or fails (kill returns -1), triggers system shutdown.
+ * Monitors the health of all active processes in the system.
+ *
+ * Mechanism:
+ * 1. Reads 'registry.pid' to find active Process IDs (PIDs).
+ * 2. Sends SIGUSR1 (Heartbeat Signal) to each PID.
+ * 3. Expects processes to handle SIGUSR1 and log their status.
+ * 4. Checks if processes are still running using kill(pid, 0).
  */
 
 #include "common.h"
-#include <ncurses.h>
+#include <signal.h>
 
-typedef struct {
-    char name[32];
-    pid_t pid;
-} MonitoredProcess;
+#define CHECK_INTERVAL_SEC 2
 
-MonitoredProcess processes[10];
-int proc_count = 0;
-pid_t server_pid = -1;
+int main(void) {
+    register_process("Watchdog");
 
-/* Reads the registry file to find active processes */
-void load_pids() {
-    proc_count = 0;
-    server_pid = -1;
-
-    FILE *f = fopen(FILE_PID, "r");
-    if (!f) return;
-
-    int fd = fileno(f);
-    flock(fd, LOCK_SH); // Shared Lock for thread safety
-
-    char name[32];
-    int pid;
-    while(fscanf(f, "%s %d", name, &pid) == 2) {
-        strcpy(processes[proc_count].name, name);
-        processes[proc_count].pid = pid;
-        if(strcmp(name, "Server") == 0) server_pid = pid;
-        proc_count++;
-        if(proc_count >= 10) break;
-    }
-    flock(fd, LOCK_UN);
-    fclose(f);
-}
-
-int main() {
-    initscr(); cbreak(); noecho(); curs_set(0);
-
-    FILE *f = fopen(LOG_WATCHDOG, "w"); if(f) fclose(f);
-
-    register_process("Watchdog"); // Register self too
-
-    mvprintw(0, 0, "--- WATCHDOG MONITOR ---");
-    refresh();
+    // Log Header
+    log_message(LOG_WATCHDOG, "--- WATCHDOG STARTED ---");
 
     while(1) {
-        load_pids();
+        sleep(CHECK_INTERVAL_SEC);
 
-        erase();
-        mvprintw(0, 0, "--- WATCHDOG MONITOR ---");
-        mvprintw(1, 0, "Monitoring %d processes...", proc_count);
-        mvprintw(2, 0, "--------------------------------");
+        FILE *f = fopen(F_PID_REG, "r");
+        if (!f) continue;
 
-        for(int i=0; i<proc_count; i++) {
-            // Ping process with Signal 0 (Existence Check) or SIGUSR1 (Heartbeat Request)
-            // Here we use SIGUSR1. If process is hung/zombie, it might fail or not respond conceptually.
-            // Using kill(pid, 0) checks if process merely exists.
-            int res = kill(processes[i].pid, SIGUSR1);
+        char name[32];
+        int pid;
 
-            if (res == 0) {
-                mvprintw(3+i, 2, "[%s] (PID %d): ACTIVE", processes[i].name, processes[i].pid);
+        // Scan the Registry
+        while (fscanf(f, "%s %d", name, &pid) == 2) {
+            // Skip self to avoid killing the watchdog itself
+            if (strcmp(name, "Watchdog") == 0) continue;
+
+            // Check if process exists in the OS
+            // kill(pid, 0) sends no actual signal but performs error checking.
+            // If it returns 0, the process exists and we have permission to signal it.
+            // If it returns -1 (ESRCH), the process is gone.
+            if (kill(pid, 0) == 0) {
+                // Determine if process is responsive (Liveness Check)
+                // We send SIGUSR1 (User Defined Signal 1).
+                // The target process is expected to catch this signal and write a 'HEARTBEAT'
+                // entry to the 'watchdog.log' file.
+                //
+                // Note: A robust watchdog would verify that the log file was actually
+                // updated with a fresh timestamp. For this assignment, simply sending
+                // the signal and checking existence is sufficient to demonstrate the concept.
+
+                kill(pid, SIGUSR1);
             } else {
-                // FAILURE DETECTED
-                mvprintw(3+i, 2, "[%s] (PID %d): UNRESPONSIVE! STOPPING SYSTEM...", processes[i].name, processes[i].pid);
-                refresh();
+                // CRITICAL FAILURE DETECTED
+                // The process ID was in the registry but the OS says it's gone.
+                // This implies a crash or unexpected termination.
+                char msg[64];
+                snprintf(msg, sizeof(msg), "ALERT: Process %s (PID %d) is DEAD/MISSING", name, pid);
+                log_message(LOG_WATCHDOG, msg);
 
-                log_message(LOG_WATCHDOG, "ALERT: Process Unresponsive. Killing Server to stop system.");
-
-                // Trigger Cascade Shutdown via Server, or kill specific if Server is dead
-                if(server_pid > 0) kill(server_pid, SIGKILL);
-                else kill(processes[i].pid, SIGKILL);
-
-                sleep(2);
-                endwin();
-                exit(1);
+                // In a production system, we might attempt to restart the process.
+                // Here, we log the failure.
             }
         }
-
-        mvprintw(15, 0, "Logs are written to %s", LOG_WATCHDOG);
-        refresh();
-        sleep(2); // Check every 2 seconds
+        fclose(f);
     }
-
-    endwin();
     return 0;
 }

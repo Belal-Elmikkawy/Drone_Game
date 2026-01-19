@@ -12,7 +12,8 @@
 #include "common.h"
 
 // --- PHYSICS PARAMETERS ---
-float M = DEFAULT_M;   // Mass
+// These default values are loaded from common.h but can be overridden by params.txt
+float M = DEFAULT_M;   // Mass (Inertia)
 float K = DEFAULT_K;   // Friction/Damping
 float T = DEFAULT_T;   // Sampling Time (dt)
 float ETA = DEFAULT_ETA; // Repulsion Field Strength
@@ -25,8 +26,11 @@ int current_h = DEFAULT_HEIGHT;
 float x_curr, y_curr, x_prev, y_prev;
 
 /*
+ * load_params
+ * -----------
  * Reloads variables from 'params.txt' dynamically.
  * Allows tuning physics without recompilation.
+ * Called periodically in the main loop.
  */
 void load_params() {
     FILE *f = fopen("params.txt", "r");
@@ -44,8 +48,15 @@ void load_params() {
 }
 
 /*
+ * parse_world_state
+ * -----------------
  * Parses the complex Environment String sent by the Server.
  * Format: "W:w,h|F:fx,fy|O:ox,oy;..."
+ *
+ * Steps:
+ * 1. Parse Window Dimension (W).
+ * 2. Parse Input Force (F).
+ * 3. Parse Obstacles (O).
  */
 void parse_world_state(char *buf, float *fx, float *fy) {
     // 1. Map Dimensions
@@ -71,15 +82,21 @@ void parse_world_state(char *buf, float *fx, float *fy) {
 }
 
 /*
+ * calc_repulsion
+ * --------------
  * Calculates Repulsive Forces from Walls and Obstacles.
+ * Method: Inverse Square Law (Khatib's Potential Field)
  * Formula: F = ETA * (1/dist - 1/RHO)^2 * (gradient)
- * Only acts if distance < RHO.
+ *
+ * Only acts if distance < RHO (Influence Radius).
  */
 void calc_repulsion(float x, float y, float *rx, float *ry) {
     *rx = 0; *ry = 0;
     float dist;
 
     // --- WALL REPULSION ---
+    // Calculate distance to each of the 4 walls and apply force
+
     // Left Wall
     dist = (x < 0.1f) ? 0.1f : x;
     if (dist < RHO) *rx += ETA * pow((1.0/dist - 1.0/RHO), 2);
@@ -104,13 +121,13 @@ void calc_repulsion(float x, float y, float *rx, float *ry) {
         float dy = y - obstacles[i].y;
         dist = sqrt(dx*dx + dy*dy);
 
-        if(dist < 0.1f) dist = 0.1f;
+        if(dist < 0.1f) dist = 0.1f; // Avoid division by zero
 
         // Push away if within radius
         if(dist < RHO) {
             float mag = ETA * pow((1.0/dist - 1.0/RHO), 2);
-            *rx += mag * (dx/dist);
-            *ry += mag * (dy/dist);
+            *rx += mag * (dx/dist); // Proj X
+            *ry += mag * (dy/dist); // Proj Y
         }
     }
 }
@@ -141,7 +158,7 @@ int main(void) {
         ssize_t n = read(STDIN_FILENO, buf, sizeof(buf)-1);
         if (n > 0) {
             buf[n] = 0;
-            // Find latest update in buffer
+            // Find latest update in buffer (handle batching)
             char *start = strrchr(buf, 'W');
             if (!start) start = strrchr(buf, 'F');
             if (start) parse_world_state(start, &F_cmd_x, &F_cmd_y);
@@ -160,8 +177,11 @@ int main(void) {
         float F_total_x = F_cmd_x + F_rep_x;
         float F_total_y = F_cmd_y + F_rep_y;
 
-        // 2. Discretization Integration (Euler/Finite Difference generic form)
-        // x(t+1) = ... based on Mass and Friction
+        // 2. Discretization Integration (Generic Form)
+        // We use a discrete time step approximation to simulate the physics.
+        // Equation of Motion: M*x'' + K*x' = F
+        // Solved via Finite Difference Method for x[n+1].
+
         float a = M / (T * T);
         float b = K / T;
         float next_x = (F_total_x + (2 * a + b) * x_curr - a * x_prev) / (a + b);
@@ -171,12 +191,14 @@ int main(void) {
         x_curr = next_x; y_curr = next_y;
 
         // 3. Wall Clamping (Hard Limits)
+        // Ensures the drone never physically escapes the window
         if (x_curr < 1.0f) { x_curr = 1.0f; x_prev = 1.0f; }
         if (x_curr > current_w - 1.0f) { x_curr = current_w - 1.0f; x_prev = current_w - 1.0f; }
         if (y_curr < 1.0f) { y_curr = 1.0f; y_prev = 1.0f; }
         if (y_curr > current_h - 1.0f) { y_curr = current_h - 1.0f; y_prev = current_h - 1.0f; }
 
         // 4. Output State to Server
+        // Prints "X,Y" to stdout, which is piped to the Server
         printf("%.2f,%.2f\n", x_curr, y_curr);
         fflush(stdout);
 
